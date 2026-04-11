@@ -85,7 +85,11 @@ export function TrashBin({ onClose }: Props) {
                 return (
                   <div key={char.id} className="flex items-center gap-4 p-4 bg-white/5 border border-white/10 rounded-2xl">
                     <div className="w-16 h-16 rounded-xl overflow-hidden shrink-0 bg-black/50">
-                      <img src={char.avatarUrlFallback} alt={char.name} className="w-full h-full object-cover" />
+                      <img 
+                        src={char.avatarBlob ? URL.createObjectURL(char.avatarBlob) : char.avatarUrlFallback} 
+                        alt={char.name} 
+                        className="w-full h-full object-cover" 
+                      />
                     </div>
                     <div className="flex-1 min-w-0">
                       <h3 className="font-medium text-white truncate">{char.name}</h3>

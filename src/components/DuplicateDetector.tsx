@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Copy, Trash2, X, AlertTriangle, CheckCircle2 } from 'lucide-react';
-import { CharacterCard, DuplicateGroup, findDuplicates, deleteCharacter } from '../lib/db';
+import { Copy, Trash2, X, AlertTriangle, CheckCircle2, Merge } from 'lucide-react';
+import { CharacterCard, DuplicateGroup, findDuplicates, deleteCharacter, saveCharacter } from '../lib/db';
 
 interface Props {
   onClose: () => void;
+  onSelectChar: (id: string) => void;
 }
 
-export function DuplicateDetector({ onClose }: Props) {
+export function DuplicateDetector({ onClose, onSelectChar }: Props) {
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -27,6 +28,64 @@ export function DuplicateDetector({ onClose }: Props) {
       await deleteCharacter(id);
       loadDuplicates();
     }
+  };
+
+  const handleMergeAndKeep = async (keptChar: CharacterCard, group: DuplicateGroup) => {
+    if (!confirm('确定要保留此卡，合并其他卡片的快捷回复(QR)和来源链接，并删除其他卡片吗？')) return;
+
+    const otherChars = group.characters.filter(c => c.id !== keptChar.id);
+    let updatedData = { ...keptChar.data };
+    let targetData = updatedData.data ? updatedData.data : updatedData;
+
+    // Initialize extensions if not present
+    if (!targetData.extensions) targetData.extensions = {};
+
+    let mergedQRs = [...(targetData.extensions.quick_replies || [])];
+    let mergedSource = targetData.extensions.source || targetData.source || '';
+    let mergedNotes = targetData.creator_notes || '';
+
+    for (const other of otherChars) {
+      const otherTarget = other.data.data ? other.data.data : other.data;
+      
+      // Merge QRs
+      const otherQRs = otherTarget.extensions?.quick_replies || [];
+      for (const qr of otherQRs) {
+        // Avoid exact duplicates
+        if (!mergedQRs.some(q => q.message === qr.message)) {
+          mergedQRs.push(qr);
+        }
+      }
+
+      // Merge Source
+      const otherSource = otherTarget.extensions?.source || otherTarget.source;
+      if (!mergedSource && otherSource) {
+        mergedSource = otherSource;
+      }
+
+      // Merge Notes
+      const otherNotes = otherTarget.creator_notes;
+      if (!mergedNotes && otherNotes) {
+        mergedNotes = otherNotes;
+      }
+    }
+
+    targetData.extensions.quick_replies = mergedQRs;
+    targetData.extensions.source = mergedSource;
+    if (updatedData.data) {
+      targetData.creator_notes = mergedNotes;
+    } else {
+      updatedData.source = mergedSource;
+      updatedData.creator_notes = mergedNotes;
+    }
+
+    const finalChar = { ...keptChar, data: updatedData };
+    await saveCharacter(finalChar);
+
+    for (const other of otherChars) {
+      await deleteCharacter(other.id);
+    }
+
+    loadDuplicates();
   };
 
   return (
@@ -77,9 +136,16 @@ export function DuplicateDetector({ onClose }: Props) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {group.characters.map(char => (
                     <div key={char.id} className="flex flex-col p-4 bg-black/20 rounded-xl border border-white/5">
-                      <div className="flex items-center gap-3 mb-3">
+                      <div 
+                        className="flex items-center gap-3 mb-3 cursor-pointer hover:bg-white/5 p-2 -m-2 rounded-lg transition"
+                        onClick={() => onSelectChar(char.id)}
+                      >
                         <div className="w-12 h-12 rounded-lg overflow-hidden shrink-0 bg-black/50">
-                          <img src={char.avatarUrlFallback} alt={char.name} className="w-full h-full object-cover" />
+                          <img 
+                            src={char.avatarBlob ? URL.createObjectURL(char.avatarBlob) : char.avatarUrlFallback} 
+                            alt={char.name} 
+                            className="w-full h-full object-cover" 
+                          />
                         </div>
                         <div className="flex-1 min-w-0">
                           <h4 className="font-medium text-white truncate">{char.name}</h4>
@@ -89,13 +155,22 @@ export function DuplicateDetector({ onClose }: Props) {
                         </div>
                       </div>
                       
-                      <button
-                        onClick={() => handleDelete(char.id)}
-                        className="mt-auto w-full py-2 flex items-center justify-center gap-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-lg transition text-sm font-medium"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        删除此卡
-                      </button>
+                      <div className="mt-auto flex flex-col gap-2">
+                        <button
+                          onClick={() => handleMergeAndKeep(char, group)}
+                          className="w-full py-2 flex items-center justify-center gap-2 bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 rounded-lg transition text-sm font-medium"
+                        >
+                          <Merge className="w-4 h-4" />
+                          保留并合并其他
+                        </button>
+                        <button
+                          onClick={() => handleDelete(char.id)}
+                          className="w-full py-2 flex items-center justify-center gap-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-lg transition text-sm font-medium"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          删除此卡
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>

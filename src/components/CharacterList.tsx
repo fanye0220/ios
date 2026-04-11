@@ -332,10 +332,10 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                 </div>
               ) : (
                 <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-600 truncate">
-                  Tavern Manager
+                  Tavern 管理器
                 </h1>
               )}
-              <p className="text-slate-400 text-xs mt-0.5 truncate">Manage your character cards ({totalCharacters})</p>
+              <p className="text-slate-400 text-xs mt-0.5 truncate">管理你的角色卡片 ({totalCharacters})</p>
             </div>
             
             <div className="flex items-center gap-2">

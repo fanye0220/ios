@@ -54,9 +54,17 @@ export function CharacterDetail({ id, onBack }: Props) {
     setIsEditingTags(false);
     if (!character) return;
     const newTags = tagsStr.split(',').map(t => t.trim()).filter(t => t);
+    
+    let updatedData = { ...character.data };
+    if (updatedData.data) {
+      updatedData.data = { ...updatedData.data, tags: newTags };
+    } else {
+      updatedData.tags = newTags;
+    }
+
     const updatedChar = { 
       ...character, 
-      data: { ...character.data, tags: newTags } 
+      data: updatedData 
     };
     await saveCharacter(updatedChar);
     setCharacter(updatedChar);
@@ -65,13 +73,21 @@ export function CharacterDetail({ id, onBack }: Props) {
   const handleUpdateSource = async (sourceStr: string) => {
     setIsEditingSource(false);
     if (!character) return;
+    
+    let updatedData = { ...character.data };
+    if (updatedData.data) {
+      updatedData.data = {
+        ...updatedData.data,
+        extensions: { ...(updatedData.data.extensions || {}), source: sourceStr }
+      };
+    } else {
+      updatedData.extensions = { ...(updatedData.extensions || {}), source: sourceStr };
+      updatedData.source = sourceStr; // Fallback for V1
+    }
+
     const updatedChar = { 
       ...character, 
-      data: { 
-        ...character.data, 
-        source: sourceStr,
-        extensions: { ...(character.data.extensions || {}), source: sourceStr }
-      } 
+      data: updatedData 
     };
     await saveCharacter(updatedChar);
     setCharacter(updatedChar);
@@ -221,7 +237,7 @@ export function CharacterDetail({ id, onBack }: Props) {
               exit={{ opacity: 0, y: -20 }}
               className="fixed top-20 left-1/2 -translate-x-1/2 bg-yellow-500/20 border border-yellow-500/50 text-yellow-200 px-4 py-2 rounded-full text-sm backdrop-blur-md z-50 flex items-center gap-2 shadow-xl"
             >
-              <span>Original PNG not found. Exported JSON instead.</span>
+              <span>未找到原始 PNG 文件，已导出为 JSON。</span>
               <button onClick={() => setShowExportAlert(false)} className="ml-2 hover:text-white">✕</button>
             </motion.div>
           )}
@@ -239,20 +255,20 @@ export function CharacterDetail({ id, onBack }: Props) {
                 exit={{ scale: 0.95 }}
                 className="bg-slate-900 border border-white/10 rounded-2xl p-6 max-w-sm w-full shadow-2xl"
               >
-                <h3 className="text-xl font-bold mb-2">Delete Character?</h3>
-                <p className="text-slate-400 mb-6">Are you sure you want to delete {character.name}? This action cannot be undone.</p>
+                <h3 className="text-xl font-bold mb-2">删除角色？</h3>
+                <p className="text-slate-400 mb-6">确定要将 {character.name} 移至回收站吗？</p>
                 <div className="flex justify-end gap-3">
                   <button
                     onClick={() => setShowDeleteConfirm(false)}
                     className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition"
                   >
-                    Cancel
+                    取消
                   </button>
                   <button
                     onClick={handleDelete}
                     className="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white transition shadow-lg shadow-red-500/20"
                   >
-                    Delete
+                    删除
                   </button>
                 </div>
               </motion.div>
@@ -526,20 +542,24 @@ export function CharacterDetail({ id, onBack }: Props) {
                       book={data.character_book || data.extensions?.character_book} 
                       onUpdate={(newBook) => {
                         const updatedChar = { ...character };
-                        if (updatedChar.data.character_book) {
-                          updatedChar.data.character_book = newBook;
-                        } else if (updatedChar.data.extensions) {
-                          updatedChar.data.extensions.character_book = newBook;
+                        let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
+                        
+                        if (targetData.character_book) {
+                          targetData.character_book = newBook;
                         } else {
-                          updatedChar.data.extensions = { ...updatedChar.data.extensions, character_book: newBook };
+                          targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
                         }
+                        
                         saveCharacter(updatedChar).then(() => setCharacter(updatedChar));
                       }}
                       onDelete={() => {
                         if (confirm('确定要删除整个世界书吗？此操作不可恢复。')) {
                           const updatedChar = { ...character };
-                          if (updatedChar.data.character_book) delete updatedChar.data.character_book;
-                          if (updatedChar.data.extensions?.character_book) delete updatedChar.data.extensions.character_book;
+                          let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
+                          
+                          if (targetData.character_book) delete targetData.character_book;
+                          if (targetData.extensions?.character_book) delete targetData.extensions.character_book;
+                          
                           saveCharacter(updatedChar).then(() => setCharacter(updatedChar));
                         }
                       }}
@@ -550,10 +570,12 @@ export function CharacterDetail({ id, onBack }: Props) {
                       <p>未包含世界书数据</p>
                       <button 
                         onClick={() => {
-                          const newBook = { name: 'New Worldbook', description: '', entries: [] };
+                          const newBook = { name: '新世界书', description: '', entries: [] };
                           const updatedChar = { ...character };
-                          if (!updatedChar.data.extensions) updatedChar.data.extensions = {};
-                          updatedChar.data.extensions.character_book = newBook;
+                          let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
+                          
+                          targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
+                          
                           saveCharacter(updatedChar).then(() => setCharacter(updatedChar));
                         }}
                         className="mt-4 px-4 py-2 bg-purple-500/20 text-purple-300 rounded-lg hover:bg-purple-500/30 transition flex items-center gap-2"
