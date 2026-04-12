@@ -144,6 +144,23 @@ function crc32(data: Uint8Array): number {
 }
 
 export function injectTavernData(originalBuffer: ArrayBuffer, data: any): ArrayBuffer {
+  const uint8 = new Uint8Array(originalBuffer);
+  
+  // Check PNG signature
+  if (
+    uint8.length < 8 ||
+    uint8[0] !== 0x89 ||
+    uint8[1] !== 0x50 ||
+    uint8[2] !== 0x4e ||
+    uint8[3] !== 0x47 ||
+    uint8[4] !== 0x0d ||
+    uint8[5] !== 0x0a ||
+    uint8[6] !== 0x1a ||
+    uint8[7] !== 0x0a
+  ) {
+    throw new Error("Not a valid PNG file");
+  }
+
   const jsonString = JSON.stringify(data);
   const base64 = btoa(unescape(encodeURIComponent(jsonString)));
   const textData = new TextEncoder().encode(`chara\0${base64}`);
@@ -165,7 +182,6 @@ export function injectTavernData(originalBuffer: ArrayBuffer, data: any): ArrayB
   view.setUint32(8 + chunkLength, crc);
 
   // Reconstruct PNG
-  const uint8 = new Uint8Array(originalBuffer);
   const chunks: Uint8Array[] = [];
   chunks.push(uint8.slice(0, 8)); // Signature
 
@@ -183,12 +199,18 @@ export function injectTavernData(originalBuffer: ArrayBuffer, data: any): ArrayB
 
     const chunkEnd = offset + 8 + length + 4;
     
-    if (type === 'tEXt') {
+    if (type === 'tEXt' || type === 'iTXt') {
       const dataOffset = offset + 8;
       const dataSlice = uint8.slice(dataOffset, dataOffset + length);
-      const text = new TextDecoder().decode(dataSlice);
-      if (text.startsWith('chara\0')) {
-        // Skip existing chara chunk, we will inject ours
+      
+      let nullIdx = 0;
+      while (nullIdx < dataSlice.length && dataSlice[nullIdx] !== 0) {
+        nullIdx++;
+      }
+      const keyword = new TextDecoder('utf-8').decode(dataSlice.slice(0, nullIdx));
+      
+      if (keyword === 'chara' || keyword === 'ccv3') {
+        // Skip existing chara/ccv3 chunk, we will inject ours
         offset = chunkEnd;
         continue;
       }

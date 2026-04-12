@@ -164,7 +164,10 @@ export function CharacterDetail({ id, onBack }: Props) {
   const handleExportPng = async () => {
     if (character.originalFile) {
       try {
-        const blob = character.originalFile;
+        const buffer = await character.originalFile.arrayBuffer();
+        const newBuffer = injectTavernData(buffer, character.data);
+        const blob = new Blob([newBuffer], { type: 'image/png' });
+        
         const safeName = getSafeFilename(character.name);
         const exportFileName = `${safeName}.png`;
         
