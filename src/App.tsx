@@ -95,7 +95,7 @@ export default function App() {
         ) : selectedFolderId === 'recommender' ? (
           <AIRecommender 
             onClose={() => { setSelectedFolderId(null); setRefreshKey(prev => prev + 1); }} 
-            onSelectChar={(id) => { setSelectedFolderId(null); setSelectedCharId(id); }}
+            onSelectChar={setSelectedCharId}
             onOpenSettings={() => setIsSettingsOpen(true)} 
           />
         ) : (
