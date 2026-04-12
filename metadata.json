@@ -1,5 +1,5 @@
 {
-  "name": "Tavern Card Manager 1",
+  "name": "Remix: Tavern Card Manager 1",
   "description": "好好笑 随机抽卡就不用调出ai思维链了吧，我想更改一下重复卡片的检测，就是重复卡片我想要的是可以看开场白有没有更新，或者是设定更多 世界书更多那种。如果卡片里面的东西都一样就直接设定相同。直接在卡上注明原因，就不要一大类了，搞成具体的小类。api用的好快啊 打标签能不能使用一次api多读几个啊，你看一下ai最好一次性打几个标签才不会乱打这样。不然消耗一次api读才打一个角色消耗好大",
   "requestFramePermissions": []
 }

@@ -28,6 +28,10 @@ export function CharacterDetail({ id, onBack }: Props) {
   const [isEditingName, setIsEditingName] = useState(false);
   const [editNameValue, setEditNameValue] = useState('');
   const [isAddingAlternate, setIsAddingAlternate] = useState(false);
+  const [isEditingCreator, setIsEditingCreator] = useState(false);
+  const [tempCreator, setTempCreator] = useState<string>('');
+  const [isEditingVersion, setIsEditingVersion] = useState(false);
+  const [tempVersion, setTempVersion] = useState<string>('');
 
   const [avatarUrl, setAvatarUrl] = useState<string>('');
   const savePromiseRef = useRef<Promise<void> | null>(null);
@@ -137,10 +141,22 @@ export function CharacterDetail({ id, onBack }: Props) {
     setCharacter(updatedChar);
   };
 
+  const handleUpdateCreator = async (creatorStr: string) => {
+    setIsEditingCreator(false);
+    await updateField('creator', creatorStr);
+  };
+
+  const handleUpdateVersion = async (versionStr: string) => {
+    setIsEditingVersion(false);
+    await updateField('character_version', versionStr);
+  };
+
   const handleBack = async () => {
     if (isEditingTags) await handleUpdateTags(tempTags);
     if (isEditingSource) await handleUpdateSource(tempSource);
     if (isEditingName) await handleNameSave();
+    if (isEditingCreator) await handleUpdateCreator(tempCreator);
+    if (isEditingVersion) await handleUpdateVersion(tempVersion);
 
     if (savePromiseRef.current) {
       await savePromiseRef.current;
@@ -410,6 +426,86 @@ export function CharacterDetail({ id, onBack }: Props) {
                         {character?.originalFile?.lastModified ? new Date(character.originalFile.lastModified).toLocaleString() : '未知'}
                       </div>
                     </div>
+
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs text-white/40 font-medium uppercase tracking-wider flex items-center gap-1">
+                          作者 (CREATOR)
+                        </div>
+                        <button onClick={() => {
+                          if (isEditingCreator) {
+                            handleUpdateCreator(tempCreator);
+                          } else {
+                            setTempCreator(data.creator || '');
+                            setIsEditingCreator(true);
+                          }
+                        }}>
+                          {isEditingCreator ? <Check className="w-3 h-3 text-green-400"/> : <Edit2 className="w-3 h-3 text-white/40 hover:text-white"/>}
+                        </button>
+                      </div>
+                      {isEditingCreator ? (
+                        <div className="flex items-center gap-2">
+                          <input 
+                            value={tempCreator} 
+                            onChange={e => setTempCreator(e.target.value)} 
+                            className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-purple-500/50"
+                            placeholder="作者名称"
+                            autoFocus
+                            onKeyDown={e => e.key === 'Enter' && handleUpdateCreator(tempCreator)}
+                          />
+                          <button onClick={() => handleUpdateCreator(tempCreator)} className="p-2 bg-green-500/20 text-green-400 rounded-xl hover:bg-green-500/30 transition shrink-0">
+                            <Check className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => setIsEditingCreator(false)} className="p-2 bg-white/10 text-white/60 rounded-xl hover:bg-white/20 transition shrink-0">
+                            <XIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="bg-white/5 rounded-xl px-3 py-2 text-sm text-white/80 min-h-[36px] flex items-center">
+                          {data.creator || <span className="text-white/30">未知作者</span>}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs text-white/40 font-medium uppercase tracking-wider flex items-center gap-1">
+                          版本 (VERSION)
+                        </div>
+                        <button onClick={() => {
+                          if (isEditingVersion) {
+                            handleUpdateVersion(tempVersion);
+                          } else {
+                            setTempVersion(data.character_version || '');
+                            setIsEditingVersion(true);
+                          }
+                        }}>
+                          {isEditingVersion ? <Check className="w-3 h-3 text-green-400"/> : <Edit2 className="w-3 h-3 text-white/40 hover:text-white"/>}
+                        </button>
+                      </div>
+                      {isEditingVersion ? (
+                        <div className="flex items-center gap-2">
+                          <input 
+                            value={tempVersion} 
+                            onChange={e => setTempVersion(e.target.value)} 
+                            className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-purple-500/50"
+                            placeholder="例如: 1.0"
+                            autoFocus
+                            onKeyDown={e => e.key === 'Enter' && handleUpdateVersion(tempVersion)}
+                          />
+                          <button onClick={() => handleUpdateVersion(tempVersion)} className="p-2 bg-green-500/20 text-green-400 rounded-xl hover:bg-green-500/30 transition shrink-0">
+                            <Check className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => setIsEditingVersion(false)} className="p-2 bg-white/10 text-white/60 rounded-xl hover:bg-white/20 transition shrink-0">
+                            <XIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="bg-white/5 rounded-xl px-3 py-2 text-sm text-white/80 min-h-[36px] flex items-center">
+                          {data.character_version || <span className="text-white/30">1.0</span>}
+                        </div>
+                      )}
+                    </div>
                     
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center justify-between">
@@ -517,16 +613,6 @@ export function CharacterDetail({ id, onBack }: Props) {
                       )}
                     </div>
 
-                    {data.creator_notes && (
-                      <div className="flex flex-col gap-1">
-                        <div className="text-xs text-white/40 font-medium uppercase tracking-wider flex items-center gap-1">
-                          作者备注 (CREATOR'S NOTES)
-                        </div>
-                        <div className="bg-white/5 rounded-xl px-3 py-2 text-sm text-white/80 whitespace-pre-wrap max-h-32 overflow-y-auto">
-                          {data.creator_notes}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 </motion.div>
               )}
@@ -600,7 +686,13 @@ export function CharacterDetail({ id, onBack }: Props) {
                     </div>
                   ) : (
                     <>
-                      <Section title="描述" content={data.description} onSave={(val) => updateField('description', val)} />
+                      <Section title="描述 (Description)" content={data.description} onSave={(val) => updateField('description', val)} />
+                      <Section title="性格 (Personality)" content={data.personality} onSave={(val) => updateField('personality', val)} />
+                      <Section title="场景 (Scenario)" content={data.scenario} onSave={(val) => updateField('scenario', val)} />
+                      <Section title="示例对话 (Mes Example)" content={data.mes_example} onSave={(val) => updateField('mes_example', val)} />
+                      <Section title="作者备注 (Creator's Notes)" content={data.creator_notes} onSave={(val) => updateField('creator_notes', val)} />
+                      <Section title="系统提示词 (System Prompt)" content={data.system_prompt} onSave={(val) => updateField('system_prompt', val)} />
+                      <Section title="历史后提示词 (Post History Instructions)" content={data.post_history_instructions} onSave={(val) => updateField('post_history_instructions', val)} />
                       
                       {character && (
                         <QuickRepliesSection 
