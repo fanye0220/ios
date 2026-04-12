@@ -159,6 +159,7 @@ export async function getAllTags(): Promise<string[]> {
   const characters = await db.getAll('characters');
   const tags = new Set<string>();
   characters.forEach(c => {
+    if (c.deletedAt) return;
     const charTags = c.data?.tags || c.data?.data?.tags;
     if (charTags && Array.isArray(charTags)) {
       charTags.forEach((t: string) => tags.add(t));

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, FileJson, ChevronRight, Plus, Edit2, Power, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Check, Upload } from 'lucide-react';
 import { getCharacter, deleteCharacter, saveCharacter, CharacterCard, getFolders } from '../lib/db';
@@ -29,6 +29,7 @@ export function CharacterDetail({ id, onBack }: Props) {
   const [editNameValue, setEditNameValue] = useState('');
 
   const [avatarUrl, setAvatarUrl] = useState<string>('');
+  const savePromiseRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     getCharacter(id).then(char => {
@@ -55,7 +56,9 @@ export function CharacterDetail({ id, onBack }: Props) {
       updatedChar.data.name = editNameValue.trim();
     }
     
-    await saveCharacter(updatedChar);
+    const promise = saveCharacter(updatedChar);
+    savePromiseRef.current = promise;
+    await promise;
     setCharacter(updatedChar);
     setIsEditingName(false);
   };
@@ -84,7 +87,9 @@ export function CharacterDetail({ id, onBack }: Props) {
       ...character, 
       data: updatedData 
     };
-    await saveCharacter(updatedChar);
+    const promise = saveCharacter(updatedChar);
+    savePromiseRef.current = promise;
+    await promise;
     setCharacter(updatedChar);
   };
 
@@ -107,8 +112,21 @@ export function CharacterDetail({ id, onBack }: Props) {
       ...character, 
       data: updatedData 
     };
-    await saveCharacter(updatedChar);
+    const promise = saveCharacter(updatedChar);
+    savePromiseRef.current = promise;
+    await promise;
     setCharacter(updatedChar);
+  };
+
+  const handleBack = async () => {
+    if (isEditingTags) await handleUpdateTags(tempTags);
+    if (isEditingSource) await handleUpdateSource(tempSource);
+    if (isEditingName) await handleNameSave();
+
+    if (savePromiseRef.current) {
+      await savePromiseRef.current;
+    }
+    onBack();
   };
 
   if (!character) return null;
@@ -136,8 +154,8 @@ export function CharacterDetail({ id, onBack }: Props) {
     if (character.originalFile) {
       try {
         const blob = character.originalFile;
-        const originalFileName = character.originalFile.name || `${getSafeFilename(character.name)}.png`;
-        const safeName = originalFileName.replace(/\.[^/.]+$/, ""); // remove extension
+        const safeName = getSafeFilename(character.name);
+        const exportFileName = `${safeName}.png`;
         
         const targetData = character.data.data ? character.data.data : character.data;
         const hasQR = targetData.extensions?.quick_replies && targetData.extensions.quick_replies.length > 0;
@@ -146,7 +164,7 @@ export function CharacterDetail({ id, onBack }: Props) {
         if (hasQR || hasAvatars) {
           const zip = new JSZip();
           
-          zip.file(originalFileName, blob);
+          zip.file(exportFileName, blob);
           
           if (hasQR) {
             const qrFileName = targetData.extensions?.qr_filename || `${safeName}_qr.json`;
@@ -185,7 +203,7 @@ export function CharacterDetail({ id, onBack }: Props) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = originalFileName;
+        a.download = exportFileName;
         a.click();
         URL.revokeObjectURL(url);
       } catch (e) {
@@ -220,7 +238,7 @@ export function CharacterDetail({ id, onBack }: Props) {
       <div className="relative z-10 min-h-screen flex flex-col">
         {/* Header */}
         <header className="sticky top-0 p-4 flex items-center justify-between bg-black/20 backdrop-blur-xl border-b border-white/10 z-20">
-          <button onClick={onBack} className="p-2 rounded-full hover:bg-white/10 transition">
+          <button onClick={handleBack} className="p-2 rounded-full hover:bg-white/10 transition">
             <ArrowLeft className="w-6 h-6" />
           </button>
           <div className="flex gap-2">
@@ -323,11 +341,11 @@ export function CharacterDetail({ id, onBack }: Props) {
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-2 mt-4 group">
+            <div className="flex items-center gap-2 mt-4">
               <h1 className="text-3xl font-bold text-center">{character.name}</h1>
               <button 
                 onClick={() => setIsEditingName(true)}
-                className="opacity-0 group-hover:opacity-100 p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-lg transition"
+                className="p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-lg transition"
               >
                 <Edit2 className="w-4 h-4" />
               </button>
@@ -798,6 +816,7 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
 
   const handleAdd = () => {
     setEditForm({
+      comment: '',
       keys: '',
       content: '',
       insertion_order: 50,
@@ -849,6 +868,17 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
           </button>
         </div>
         
+        <div>
+          <label className="block text-xs text-white/60 mb-1">标题 / 备注 (Comment)</label>
+          <input 
+            type="text" 
+            value={editForm.comment || editForm.name || ''} 
+            onChange={e => setEditForm({...editForm, comment: e.target.value})}
+            className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+            placeholder="例如: 角色背景、设定1"
+          />
+        </div>
+
         <div>
           <label className="block text-xs text-white/60 mb-1">关键词 (用逗号分隔)</label>
           <input 
@@ -947,27 +977,43 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
         ) : (
           entries.map((entry: any, i: number) => {
             const isEnabled = entry.enabled !== false;
+            const title = entry.comment || entry.name || (Array.isArray(entry.keys) ? entry.keys.join(', ') : entry.keys) || '无标题';
+            const keysDisplay = Array.isArray(entry.keys) ? entry.keys.join(', ') : entry.keys;
+
             return (
               <div key={i} className={`bg-white/5 p-3 rounded-xl border ${isEnabled ? 'border-white/10' : 'border-white/5 opacity-60'} flex gap-3 transition-opacity`}>
                 <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-start mb-1">
-                    <h4 className="font-semibold text-purple-300 truncate pr-2">
-                      {Array.isArray(entry.keys) ? entry.keys.join(', ') : entry.keys || '无关键词'}
-                    </h4>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span className="text-xs bg-white/10 px-2 py-0.5 rounded-full text-white/60">
+                  <div className="flex flex-wrap sm:flex-nowrap justify-between items-start gap-2 mb-1">
+                    <div className="flex flex-col min-w-0 flex-1">
+                      <h4 className="font-semibold text-purple-300 truncate">
+                        {title}
+                      </h4>
+                      {keysDisplay && keysDisplay !== title && (
+                        <p className="text-xs text-white/40 truncate mt-0.5">
+                          关键词: {keysDisplay}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+                      <button
+                        onClick={() => handleToggleEnable(i)}
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full transition whitespace-nowrap ${isEnabled ? 'bg-green-500/20 text-green-400' : 'bg-white/10 text-white/40'}`}
+                      >
+                        {isEnabled ? '已启用' : '已禁用'}
+                      </button>
+                      <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded-full text-white/60 whitespace-nowrap">
                         顺序: {entry.insertion_order || 50}
                       </span>
                       <button onClick={() => handleEdit(i)} className="p-1 hover:bg-white/10 rounded text-white/60 hover:text-white transition">
-                        <Edit2 className="w-4 h-4" />
+                        <Edit2 className="w-3.5 h-3.5" />
                       </button>
                       <button onClick={() => handleDelete(i)} className="p-1 hover:bg-red-500/20 rounded text-white/60 hover:text-red-400 transition">
-                        <Trash2 className="w-4 h-4" />
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </div>
                   <div 
-                    className="group cursor-pointer mt-1"
+                    className="group cursor-pointer mt-2"
                     onClick={() => setViewingEntryIndex(i)}
                   >
                     <div className="text-white/70 text-sm line-clamp-2">{entry.content}</div>

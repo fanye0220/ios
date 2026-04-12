@@ -13,9 +13,10 @@ interface Props {
   onImport: () => void;
   onSelectFolder?: (id: string | null) => void;
   onOpenSidebar?: () => void;
+  refreshTrigger?: number;
 }
 
-export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, onOpenSidebar }: Props) {
+export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, onOpenSidebar, refreshTrigger }: Props) {
   const [characters, setCharacters] = useState<CharacterCard[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [folderPreviews, setFolderPreviews] = useState<Record<string, string[]>>({});
@@ -139,7 +140,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
   useEffect(() => {
     loadData();
     getAllTags().then(setAllTags);
-  }, [page, pageSize, folderId, searchQuery, selectedTags, sortBy]);
+  }, [page, pageSize, folderId, searchQuery, selectedTags, sortBy, refreshTrigger]);
 
   const totalPages = Math.ceil(totalCharacters / pageSize);
 
@@ -186,10 +187,10 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
 
   const addCharacterToZip = async (char: CharacterCard, zipFolder: JSZip) => {
     const safeName = getSafeFilename(char.name);
+    const exportFileName = `${safeName}.png`;
+    
     if (char.originalFile) {
       const blob = char.originalFile;
-      const originalFileName = char.originalFile.name || `${safeName}.png`;
-      const baseName = originalFileName.replace(/\.[^/.]+$/, ""); // remove extension
       
       const targetData = char.data.data ? char.data.data : char.data;
       const hasQR = targetData.extensions?.quick_replies && targetData.extensions.quick_replies.length > 0;
@@ -198,9 +199,9 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
       if (hasQR || hasAvatars) {
         const charFolder = zipFolder.folder(safeName);
         if (charFolder) {
-          charFolder.file(originalFileName, blob);
+          charFolder.file(exportFileName, blob);
           if (hasQR) {
-            const qrFileName = targetData.extensions?.qr_filename || `${baseName}_qr.json`;
+            const qrFileName = targetData.extensions?.qr_filename || `${safeName}_qr.json`;
             charFolder.file(qrFileName, JSON.stringify(targetData.extensions.quick_replies, null, 2));
           }
           if (hasAvatars) {
@@ -222,7 +223,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
           }
         }
       } else {
-        zipFolder.file(originalFileName, blob);
+        zipFolder.file(exportFileName, blob);
       }
     } else {
       zipFolder.file(`${safeName}.json`, JSON.stringify(char.data, null, 2));
@@ -414,7 +415,12 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
 
               <div className="relative shrink-0">
                 <button 
-                  onClick={() => setIsFilterOpen(!isFilterOpen)}
+                  onClick={() => {
+                    if (!isFilterOpen) {
+                      getAllTags().then(setAllTags);
+                    }
+                    setIsFilterOpen(!isFilterOpen);
+                  }}
                   className={`p-2 border rounded-xl transition ${selectedTags.length > 0 ? 'bg-purple-500/20 text-purple-400 border-purple-500/50' : 'bg-white/5 text-white/60 border-white/10 hover:text-white hover:bg-white/10'}`}
                 >
                   <Filter className="w-5 h-5" />

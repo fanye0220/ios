@@ -54,12 +54,13 @@ export default function App() {
           />
         ) : (
           <CharacterList
-            key={`${refreshKey}-${selectedFolderId}`}
+            key={selectedFolderId}
             folderId={selectedFolderId}
             onSelect={setSelectedCharId}
             onImport={() => setIsImportModalOpen(true)}
             onSelectFolder={setSelectedFolderId}
             onOpenSidebar={() => setIsSidebarOpen(true)}
+            refreshTrigger={refreshKey}
           />
         )}
 
@@ -67,7 +68,10 @@ export default function App() {
           {selectedCharId && (
             <CharacterDetail
               id={selectedCharId}
-              onBack={() => setSelectedCharId(null)}
+              onBack={() => {
+                setSelectedCharId(null);
+                setRefreshKey(prev => prev + 1);
+              }}
             />
           )}
         </AnimatePresence>

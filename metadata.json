@@ -1,5 +1,5 @@
 {
-  "name": "Tavern Card Manager",
+  "name": "Remix: Tavern Card Manager",
   "description": "A mobile-first, glassmorphism UI character card manager for Tavern with import/export, greetings, and worldbook viewer.",
   "requestFramePermissions": []
 }

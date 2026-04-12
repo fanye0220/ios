@@ -7,7 +7,7 @@ interface Props {
   onClose: () => void;
 }
 
-const TrashedCharacterCard = ({ char, onRestore, onHardDelete }: { char: CharacterCard, onRestore: (id: string) => void, onHardDelete: (id: string) => void }) => {
+const TrashedCharacterCard = ({ char, onRestore, onHardDelete }: { key?: React.Key, char: CharacterCard, onRestore: (id: string) => void, onHardDelete: (id: string) => void }) => {
   const [avatarUrl, setAvatarUrl] = useState<string>(char.avatarUrlFallback);
 
   useEffect(() => {
