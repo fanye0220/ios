@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Folder as FolderIcon, Plus, MoreVertical, Edit2, Trash2, Home, X, Check, Copy, Trash } from 'lucide-react';
+import { Folder as FolderIcon, Plus, MoreVertical, Edit2, Trash2, Home, X, Check, Copy, Trash, ChevronRight } from 'lucide-react';
 import { Folder, getFolders, saveFolder, deleteFolder } from '../lib/db';
 
 interface Props {
@@ -15,6 +15,8 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose }: Pro
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
+  const [creatingParentId, setCreatingParentId] = useState<string | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
 
   const loadFolders = async () => {
     const data = await getFolders();
@@ -25,19 +27,35 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose }: Pro
     loadFolders();
   }, []);
 
+  const toggleExpand = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const handleCreateFolder = async () => {
     if (!editName.trim()) {
       setIsCreating(false);
+      setCreatingParentId(null);
       return;
     }
     const newFolder: Folder = {
       id: crypto.randomUUID(),
       name: editName.trim(),
       createdAt: Date.now(),
+      parentId: creatingParentId
     };
     await saveFolder(newFolder);
     setEditName('');
     setIsCreating(false);
+    setCreatingParentId(null);
+    if (creatingParentId) {
+      setExpandedFolders(prev => new Set(prev).add(creatingParentId));
+    }
     loadFolders();
   };
 
@@ -53,13 +71,159 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose }: Pro
   };
 
   const handleDeleteFolder = async (id: string, name: string) => {
-    if (confirm(`确定要删除文件夹 "${name}" 吗？\n文件夹内的角色不会被删除，它们将回到主页。`)) {
+    if (confirm(`确定要删除文件夹 "${name}" 吗？\n文件夹内的子文件夹和角色将移动到上一级。`)) {
       await deleteFolder(id);
       if (selectedFolderId === id) {
         onSelectFolder(null);
       }
       loadFolders();
     }
+  };
+
+  const renderFolderTree = (parentId: string | null = null, depth = 0) => {
+    const childFolders = folders.filter(f => (f.parentId || null) === parentId);
+    if (childFolders.length === 0 && !isCreating) return null;
+
+    return (
+      <div className="space-y-1">
+        {childFolders.map((folder) => {
+          const isSelected = selectedFolderId === folder.id;
+          const isExpanded = expandedFolders.has(folder.id);
+          const hasChildren = folders.some(f => f.parentId === folder.id);
+
+          return (
+            <div key={folder.id} className="relative group flex flex-col">
+              <div 
+                className={`flex items-center gap-2 px-2 py-2 rounded-xl transition-all ${
+                  isSelected
+                    ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' 
+                    : 'text-white/80 hover:bg-white/5 hover:text-white border border-transparent'
+                }`}
+                style={{ paddingLeft: `${depth * 1.2 + 0.5}rem` }}
+              >
+                <button 
+                  onClick={(e) => toggleExpand(folder.id, e)}
+                  className={`p-1 rounded hover:bg-white/10 transition-colors ${hasChildren ? 'opacity-100' : 'opacity-0 cursor-default'}`}
+                  disabled={!hasChildren}
+                >
+                  <div className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
+                    <ChevronRight className="w-4 h-4 text-white/50" />
+                  </div>
+                </button>
+                
+                <button
+                  onClick={() => {
+                    onSelectFolder(folder.id);
+                    onClose();
+                  }}
+                  className="flex-1 flex items-center gap-2 text-left truncate"
+                >
+                  <FolderIcon className={`w-4 h-4 shrink-0 ${isSelected ? 'text-blue-400' : 'text-white/50'}`} />
+                  {editingFolderId === folder.id ? (
+                    <div className="flex items-center gap-1 w-full" onClick={e => e.stopPropagation()}>
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={e => setEditName(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') handleUpdateFolder(folder);
+                          if (e.key === 'Escape') setEditingFolderId(null);
+                        }}
+                        className="bg-black/50 border border-blue-500/50 rounded px-2 py-0.5 text-sm w-full focus:outline-none focus:border-blue-400"
+                        autoFocus
+                      />
+                      <button onClick={() => handleUpdateFolder(folder)} className="p-1 text-green-400 hover:bg-white/10 rounded">
+                        <Check className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => setEditingFolderId(null)} className="p-1 text-red-400 hover:bg-white/10 rounded">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="font-medium truncate text-sm">{folder.name}</span>
+                  )}
+                </button>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCreatingParentId(folder.id);
+                      setIsCreating(true);
+                      setEditName('');
+                      setExpandedFolders(prev => new Set(prev).add(folder.id));
+                    }}
+                    className="p-1.5 text-white/40 hover:text-green-400 hover:bg-white/10 rounded-lg transition"
+                    title="新建子文件夹"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingFolderId(folder.id);
+                      setEditName(folder.name);
+                    }}
+                    className="p-1.5 text-white/40 hover:text-blue-400 hover:bg-white/10 rounded-lg transition"
+                    title="重命名"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteFolder(folder.id, folder.name);
+                    }}
+                    className="p-1.5 text-white/40 hover:text-red-400 hover:bg-white/10 rounded-lg transition"
+                    title="删除"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              
+              {isExpanded && (
+                <div className="mt-1">
+                  {renderFolderTree(folder.id, depth + 1)}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        
+        {isCreating && creatingParentId === parentId && (
+          <div 
+            className="flex items-center gap-2 px-2 py-2 rounded-xl bg-white/5"
+            style={{ paddingLeft: `${depth * 1.2 + 2}rem` }}
+          >
+            <FolderIcon className="w-4 h-4 text-white/50 shrink-0" />
+            <div className="flex items-center gap-1 w-full">
+              <input
+                type="text"
+                value={editName}
+                onChange={e => setEditName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleCreateFolder();
+                  if (e.key === 'Escape') {
+                    setIsCreating(false);
+                    setCreatingParentId(null);
+                  }
+                }}
+                placeholder="新文件夹名称..."
+                className="bg-transparent border-none outline-none text-sm text-white w-full"
+                autoFocus
+              />
+              <button onClick={handleCreateFolder} className="p-1 text-green-400 hover:bg-white/10 rounded">
+                <Check className="w-4 h-4" />
+              </button>
+              <button onClick={() => { setIsCreating(false); setCreatingParentId(null); }} className="p-1 text-red-400 hover:bg-white/10 rounded">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -116,31 +280,21 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose }: Pro
         <div>
           <div className="flex items-center justify-between px-4 mb-2">
             <h2 className="text-xs font-semibold text-white/40 uppercase tracking-wider">文件夹</h2>
+            <button
+              onClick={() => {
+                setCreatingParentId(null);
+                setIsCreating(true);
+                setEditName('');
+              }}
+              className="p-1 text-white/40 hover:text-white hover:bg-white/10 rounded transition"
+              title="新建根文件夹"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
           </div>
 
           <div className="space-y-1">
-            {folders.map((folder) => {
-              const isSelected = selectedFolderId === folder.id;
-
-              return (
-                <div key={folder.id} className="relative group flex items-center">
-                  <button
-                    onClick={() => {
-                      onSelectFolder(folder.id);
-                      onClose();
-                    }}
-                    className={`flex-1 flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
-                      isSelected
-                        ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' 
-                        : 'text-white/80 hover:bg-white/5 hover:text-white border border-transparent'
-                    }`}
-                  >
-                    <FolderIcon className={`w-5 h-5 ${isSelected ? 'text-blue-400' : 'text-white/50'}`} />
-                    <span className="font-medium truncate text-left flex-1">{folder.name}</span>
-                  </button>
-                </div>
-              );
-            })}
+            {renderFolderTree()}
           </div>
         </div>
       </div>

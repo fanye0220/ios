@@ -20,19 +20,29 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
-  const getOrCreateFolder = async (folderName: string): Promise<string> => {
+  const getOrCreateNestedFolder = async (pathParts: string[]): Promise<string | undefined> => {
+    if (pathParts.length === 0) return undefined;
+    let currentParentId: string | null = null;
+    
     const folders = await getFolders();
-    const existingFolder = folders.find(f => f.name === folderName);
-    if (existingFolder) {
-      return existingFolder.id;
+    
+    for (const part of pathParts) {
+      const existing = folders.find(f => f.name === part && (f.parentId || null) === currentParentId);
+      if (existing) {
+        currentParentId = existing.id;
+      } else {
+        const newFolder: DBFolder = {
+          id: crypto.randomUUID(),
+          name: part,
+          createdAt: Date.now(),
+          parentId: currentParentId
+        };
+        await saveFolder(newFolder);
+        folders.push(newFolder);
+        currentParentId = newFolder.id;
+      }
     }
-    const newFolder: DBFolder = {
-      id: crypto.randomUUID(),
-      name: folderName,
-      createdAt: Date.now(),
-    };
-    await saveFolder(newFolder);
-    return newFolder.id;
+    return currentParentId || undefined;
   };
 
   const processChunk = async (files: File[], startIndex: number, chunkSize: number, total: number, successCount: number, errors: {file: string, error: string}[]) => {
@@ -46,6 +56,14 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
         let avatarUrlFallback = '';
         let targetFolderId = folderId || undefined;
         let charName = 'Unknown';
+
+        if (file.webkitRelativePath) {
+          const parts = file.webkitRelativePath.split('/');
+          if (parts.length > 1) {
+            const folderParts = parts.slice(0, -1);
+            targetFolderId = await getOrCreateNestedFolder(folderParts);
+          }
+        }
 
         if (file.type === 'image/png' || file.name.endsWith('.png')) {
           const buffer = await file.arrayBuffer();
@@ -68,10 +86,10 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           }
           
           if (isTheme) {
-            targetFolderId = await getOrCreateFolder('美化');
+            targetFolderId = await getOrCreateNestedFolder(['美化']);
             charName = data.name || file.name.replace(/\.[^/.]+$/, "");
           } else if (isAIPreset) {
-            targetFolderId = await getOrCreateFolder('预设');
+            targetFolderId = await getOrCreateNestedFolder(['预设']);
             charName = data.name || file.name.replace(/\.[^/.]+$/, "");
           } else if (isCharacter) {
             charName = data.name || data.data?.name || 'Unknown Character';
@@ -278,6 +296,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
               ref={folderInputRef}
               onChange={(e) => e.target.files && handleFiles(e.target.files)}
               className="hidden"
+              multiple
               {...({ webkitdirectory: "", directory: "" } as any)}
             />
           </motion.div>

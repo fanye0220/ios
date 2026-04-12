@@ -22,10 +22,10 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
   const [folderPreviews, setFolderPreviews] = useState<Record<string, string[]>>({});
   const [totalCharacters, setTotalCharacters] = useState(0);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(() => Number(localStorage.getItem('tavern_pageSize')) || 50);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [sortBy, setSortBy] = useState<SortOption>('newest_import');
+  const [sortBy, setSortBy] = useState<SortOption>(() => (localStorage.getItem('tavern_sortBy') as SortOption) || 'newest_import');
   const [isSortOpen, setIsSortOpen] = useState(false);
   
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -46,6 +46,14 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState(true);
   const lastScrollY = useRef(0);
+
+  useEffect(() => {
+    localStorage.setItem('tavern_pageSize', pageSize.toString());
+  }, [pageSize]);
+
+  useEffect(() => {
+    localStorage.setItem('tavern_sortBy', sortBy);
+  }, [sortBy]);
 
   useEffect(() => {
     const scrollContainer = document.getElementById('main-scroll-container');
@@ -74,6 +82,13 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
     }
   };
 
+  const handleBack = async () => {
+    if (!folderId) return;
+    const allFolders = await getFolders();
+    const current = allFolders.find(f => f.id === folderId);
+    onSelectFolder?.(current?.parentId || null);
+  };
+
   const handleCreateFolder = async () => {
     if (!newFolderName.trim()) {
       setIsCreatingFolder(false);
@@ -83,6 +98,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
       id: crypto.randomUUID(),
       name: newFolderName.trim(),
       createdAt: Date.now(),
+      parentId: folderId || null
     };
     await saveFolder(newFolder);
     setNewFolderName('');
@@ -113,28 +129,30 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
       setCharacters(characters);
       setTotalCharacters(total);
     });
-    if (folderId === null) {
-      getFolders().then(async data => {
-        setFolders(data.sort((a, b) => b.createdAt - a.createdAt));
-        
-        // Fetch previews for folders
-        const previews: Record<string, string[]> = {};
-        for (const folder of data) {
-          const { characters } = await getCharacters(1, 4, folder.id);
-          previews[folder.id] = characters
-            .map(c => c.avatarBlob ? URL.createObjectURL(c.avatarBlob) : c.avatarUrlFallback || '')
-            .filter(Boolean);
-        }
-        setFolderPreviews(previews);
-      });
-      setCurrentFolderName(null);
-    } else {
-      setFolders([]);
-      getFolders().then(data => {
-        const folder = data.find(f => f.id === folderId);
-        if (folder) setCurrentFolderName(folder.name);
-      });
-    }
+    
+    getFolders().then(async data => {
+      let currentFolders: Folder[] = [];
+      if (folderId === null) {
+        currentFolders = data.filter(f => !f.parentId).sort((a, b) => b.createdAt - a.createdAt);
+        setCurrentFolderName(null);
+      } else {
+        currentFolders = data.filter(f => f.parentId === folderId).sort((a, b) => b.createdAt - a.createdAt);
+        const currentFolder = data.find(f => f.id === folderId);
+        if (currentFolder) setCurrentFolderName(currentFolder.name);
+      }
+      
+      setFolders(currentFolders);
+      
+      // Fetch previews for folders
+      const previews: Record<string, string[]> = {};
+      for (const folder of currentFolders) {
+        const { characters } = await getCharacters(1, 4, folder.id);
+        previews[folder.id] = characters
+          .map(c => c.avatarBlob ? URL.createObjectURL(c.avatarBlob) : c.avatarUrlFallback || '')
+          .filter(Boolean);
+      }
+      setFolderPreviews(previews);
+    });
   };
 
   useEffect(() => {
@@ -152,13 +170,13 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
   };
 
   const handleSelectPage = () => {
-    const pageItems = characters.length + (folderId === null && !searchQuery && selectedTags.length === 0 ? folders.length : 0);
+    const pageItems = characters.length + (!searchQuery && selectedTags.length === 0 ? folders.length : 0);
     
     let allPageSelected = true;
     for (const c of characters) {
       if (!selectedIds.has(c.id)) allPageSelected = false;
     }
-    if (folderId === null && !searchQuery && selectedTags.length === 0) {
+    if (!searchQuery && selectedTags.length === 0) {
       for (const f of folders) {
         if (!selectedIds.has(f.id)) allPageSelected = false;
       }
@@ -167,14 +185,14 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
     if (allPageSelected) {
       const newSet = new Set(selectedIds);
       characters.forEach(c => newSet.delete(c.id));
-      if (folderId === null && !searchQuery && selectedTags.length === 0) {
+      if (!searchQuery && selectedTags.length === 0) {
         folders.forEach(f => newSet.delete(f.id));
       }
       setSelectedIds(newSet);
     } else {
       const newSet = new Set(selectedIds);
       characters.forEach(c => newSet.add(c.id));
-      if (folderId === null && !searchQuery && selectedTags.length === 0) {
+      if (!searchQuery && selectedTags.length === 0) {
         folders.forEach(f => newSet.add(f.id));
       }
       setSelectedIds(newSet);
@@ -183,14 +201,14 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
 
   const handleSelectAll = async () => {
     const { characters: allChars } = await getCharacters(1, 100000, folderId, searchQuery, selectedTags, sortBy);
-    const totalItems = allChars.length + (folderId === null && !searchQuery && selectedTags.length === 0 ? folders.length : 0);
+    const totalItems = allChars.length + (!searchQuery && selectedTags.length === 0 ? folders.length : 0);
     
     if (selectedIds.size === totalItems) {
       setSelectedIds(new Set());
     } else {
       const newSet = new Set<string>();
       allChars.forEach(c => newSet.add(c.id));
-      if (folderId === null && !searchQuery && selectedTags.length === 0) {
+      if (!searchQuery && selectedTags.length === 0) {
         folders.forEach(f => newSet.add(f.id));
       }
       setSelectedIds(newSet);
@@ -199,7 +217,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
 
   const handleBatchDelete = async () => {
     if (selectedIds.size === 0) return;
-    if (confirm(`确定要删除选中的 ${selectedIds.size} 项吗？\n（选中的角色将被移至回收站，文件夹将被直接删除且其内角色回到主页）`)) {
+    if (confirm(`确定要删除选中的 ${selectedIds.size} 项吗？\n（选中的角色将被移至回收站，文件夹将被直接删除且其内子项将移动到上一级）`)) {
       for (const id of selectedIds) {
         if (folders.some(f => f.id === id)) {
           await deleteFolder(id);
@@ -215,6 +233,14 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
 
   const getSafeFilename = (name: string) => {
     return name.replace(/[\\/:*?"<>|]/g, '_') || 'character';
+  };
+
+  const getFolderPath = (folderId: string | undefined, folders: Folder[]): string => {
+    if (!folderId) return '';
+    const folder = folders.find(f => f.id === folderId);
+    if (!folder) return '';
+    const parentPath = getFolderPath(folder.parentId || undefined, folders);
+    return parentPath ? `${parentPath}/${getSafeFilename(folder.name)}` : getSafeFilename(folder.name);
   };
 
   const addCharacterToZip = async (char: CharacterCard, zipFolder: JSZip) => {
@@ -268,15 +294,31 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
     try {
       const zip = new JSZip();
       
+      // Get all folders to resolve paths
+      const allFolders = await getFolders();
+      
       for (const id of selectedIds) {
-        const folder = folders.find(f => f.id === id);
+        const folder = allFolders.find(f => f.id === id);
         if (folder) {
+          // Export all characters in this folder and its subfolders
+          const exportFolderRecursive = async (currentFolderId: string, currentZip: JSZip) => {
+            const { characters: folderChars } = await getCharacters(1, 10000, currentFolderId);
+            for (const char of folderChars) {
+              await addCharacterToZip(char, currentZip);
+            }
+            
+            const subFolders = allFolders.filter(f => f.parentId === currentFolderId);
+            for (const subFolder of subFolders) {
+              const subZip = currentZip.folder(getSafeFilename(subFolder.name));
+              if (subZip) {
+                await exportFolderRecursive(subFolder.id, subZip);
+              }
+            }
+          };
+          
           const folderZip = zip.folder(getSafeFilename(folder.name));
           if (folderZip) {
-            const { characters: folderChars } = await getCharacters(1, 10000, folder.id);
-            for (const char of folderChars) {
-              await addCharacterToZip(char, folderZip);
-            }
+            await exportFolderRecursive(folder.id, folderZip);
           }
         } else {
           const char = await getCharacter(id);
@@ -303,16 +345,40 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
   };
 
   const handleMoveToFolder = async (targetFolderId: string | null) => {
+    // Prevent moving a folder into itself or its descendants
+    const isDescendant = async (folderIdToCheck: string, targetId: string | null): Promise<boolean> => {
+      if (!targetId) return false;
+      if (folderIdToCheck === targetId) return true;
+      const allFolders = await getFolders();
+      let current = allFolders.find(f => f.id === targetId);
+      while (current && current.parentId) {
+        if (current.parentId === folderIdToCheck) return true;
+        current = allFolders.find(f => f.id === current.parentId);
+      }
+      return false;
+    };
+
+    const allFolders = await getFolders();
+
     for (const id of selectedIds) {
-      if (folders.some(f => f.id === id)) continue; // Skip moving folders
-      const char = await getCharacter(id);
-      if (char) {
-        if (targetFolderId === null) {
-          delete char.folderId;
-        } else {
-          char.folderId = targetFolderId;
+      const folder = allFolders.find(f => f.id === id);
+      if (folder) {
+        if (await isDescendant(id, targetFolderId)) {
+          alert(`无法将文件夹 "${folder.name}" 移动到其自身或其子文件夹中。`);
+          continue;
         }
-        await saveCharacter(char);
+        folder.parentId = targetFolderId;
+        await saveFolder(folder);
+      } else {
+        const char = await getCharacter(id);
+        if (char) {
+          if (targetFolderId === null) {
+            delete char.folderId;
+          } else {
+            char.folderId = targetFolderId;
+          }
+          await saveCharacter(char);
+        }
       }
     }
     setIsMoveModalOpen(false);
@@ -359,7 +425,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
               {folderId ? (
                 <div className="flex items-center gap-2 mb-1">
                   <button 
-                    onClick={() => onSelectFolder?.(null)}
+                    onClick={handleBack}
                     className="p-1 -ml-1 rounded-lg hover:bg-white/10 transition text-white/60 hover:text-white"
                   >
                     <ChevronLeft className="w-6 h-6" />
@@ -370,7 +436,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                 </div>
               ) : (
                 <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-600 truncate">
-                  Tavern 管理器
+                  SillyTavern管理器
                 </h1>
               )}
               <p className="text-slate-400 text-xs mt-0.5 truncate">管理你的角色卡片 ({totalCharacters})</p>
@@ -474,17 +540,27 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                       >
                         <div className="flex items-center justify-between mb-3">
                           <h3 className="font-semibold text-white">按标签筛选</h3>
-                          {allTags.length > 0 && (
-                            <button 
-                              onClick={() => {
-                                setIsEditingTags(!isEditingTags);
-                                setEditingTagValue(null);
-                              }}
-                              className="text-xs text-purple-400 hover:text-purple-300 transition"
-                            >
-                              {isEditingTags ? '完成' : '编辑标签'}
-                            </button>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {selectedTags.length > 0 && (
+                              <button 
+                                onClick={() => setSelectedTags([])}
+                                className="text-xs text-red-400 hover:text-red-300 transition"
+                              >
+                                清除选中
+                              </button>
+                            )}
+                            {allTags.length > 0 && (
+                              <button 
+                                onClick={() => {
+                                  setIsEditingTags(!isEditingTags);
+                                  setEditingTagValue(null);
+                                }}
+                                className="text-xs text-purple-400 hover:text-purple-300 transition"
+                              >
+                                {isEditingTags ? '完成' : '编辑'}
+                              </button>
+                            )}
+                          </div>
                         </div>
                         {allTags.length === 0 ? (
                           <p className="text-sm text-white/40">无可用标签</p>
@@ -603,7 +679,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
         <div className="px-4">
           <div className={viewMode === 'grid' ? "grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4" : "flex flex-col gap-2"}>
             
-            {folderId === null && !searchQuery && selectedTags.length === 0 && (
+            {!searchQuery && selectedTags.length === 0 && (
               <motion.div
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}

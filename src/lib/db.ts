@@ -4,6 +4,7 @@ export interface Folder {
   id: string;
   name: string;
   createdAt: number;
+  parentId?: string | null;
 }
 
 export interface CharacterCard {
@@ -70,7 +71,20 @@ export async function deleteFolder(id: string): Promise<void> {
   const db = await initDB();
   const tx = db.transaction(['folders', 'characters'], 'readwrite');
   
-  await tx.objectStore('folders').delete(id);
+  const folderStore = tx.objectStore('folders');
+  const folderToDelete = await folderStore.get(id);
+  const parentId = folderToDelete?.parentId || null;
+
+  // Update subfolders to point to the deleted folder's parent
+  const allFolders = await folderStore.getAll();
+  for (const f of allFolders) {
+    if (f.parentId === id) {
+      f.parentId = parentId;
+      await folderStore.put(f);
+    }
+  }
+
+  await folderStore.delete(id);
   
   const charStore = tx.objectStore('characters');
   const index = charStore.index('by-folder');
@@ -78,7 +92,11 @@ export async function deleteFolder(id: string): Promise<void> {
   
   while (cursor) {
     const char = cursor.value;
-    delete char.folderId;
+    if (parentId) {
+      char.folderId = parentId;
+    } else {
+      delete char.folderId;
+    }
     await cursor.update(char);
     cursor = await cursor.continue();
   }

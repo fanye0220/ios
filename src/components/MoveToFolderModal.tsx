@@ -20,6 +20,25 @@ export function MoveToFolderModal({ isOpen, onClose, onMove }: Props) {
 
   if (!isOpen) return null;
 
+  const renderFolderOptions = (parentId: string | null = null, depth = 0) => {
+    const childFolders = folders.filter(f => (f.parentId || null) === parentId);
+    return childFolders.map(folder => (
+      <React.Fragment key={folder.id}>
+        <button
+          onClick={() => onMove(folder.id)}
+          className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition text-left"
+          style={{ paddingLeft: `${depth * 1.5 + 0.75}rem` }}
+        >
+          <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center text-blue-400 shrink-0">
+            <FolderIcon className="w-5 h-5" />
+          </div>
+          <span className="font-medium text-white truncate">{folder.name}</span>
+        </button>
+        {renderFolderOptions(folder.id, depth + 1)}
+      </React.Fragment>
+    ));
+  };
+
   return (
     <AnimatePresence>
       <motion.div
@@ -48,24 +67,13 @@ export function MoveToFolderModal({ isOpen, onClose, onMove }: Props) {
               onClick={() => onMove(null)}
               className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition text-left"
             >
-              <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center text-white/50">
+              <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center text-white/50 shrink-0">
                 <FolderIcon className="w-5 h-5" />
               </div>
               <span className="font-medium text-white">主页 (移除文件夹)</span>
             </button>
             
-            {folders.map(folder => (
-              <button
-                key={folder.id}
-                onClick={() => onMove(folder.id)}
-                className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition text-left"
-              >
-                <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center text-blue-400">
-                  <FolderIcon className="w-5 h-5" />
-                </div>
-                <span className="font-medium text-white">{folder.name}</span>
-              </button>
-            ))}
+            {renderFolderOptions()}
             
             {folders.length === 0 && (
               <div className="p-8 text-center text-white/40 text-sm">
