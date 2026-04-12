@@ -71,7 +71,7 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose }: Pro
   };
 
   const handleDeleteFolder = async (id: string, name: string) => {
-    if (confirm(`确定要删除文件夹 "${name}" 吗？\n文件夹内的子文件夹和角色将移动到上一级。`)) {
+    if (confirm(`确定要删除文件夹 "${name}" 吗？\n文件夹内的所有子文件夹和角色都将被移至回收站。`)) {
       await deleteFolder(id);
       if (selectedFolderId === id) {
         onSelectFolder(null);
@@ -94,55 +94,56 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose }: Pro
           return (
             <div key={folder.id} className="relative group flex flex-col">
               <div 
-                className={`flex items-center gap-2 px-2 py-2 rounded-xl transition-all ${
+                className={`flex items-center justify-between pr-2 py-2 rounded-xl transition-all w-full ${
                   isSelected
                     ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' 
                     : 'text-white/80 hover:bg-white/5 hover:text-white border border-transparent'
                 }`}
-                style={{ paddingLeft: `${depth * 1.2 + 0.5}rem` }}
               >
-                <button 
-                  onClick={(e) => toggleExpand(folder.id, e)}
-                  className={`p-1 rounded hover:bg-white/10 transition-colors ${hasChildren ? 'opacity-100' : 'opacity-0 cursor-default'}`}
-                  disabled={!hasChildren}
-                >
-                  <div className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
-                    <ChevronRight className="w-4 h-4 text-white/50" />
-                  </div>
-                </button>
-                
-                <button
-                  onClick={() => {
-                    onSelectFolder(folder.id);
-                    onClose();
-                  }}
-                  className="flex-1 flex items-center gap-2 text-left truncate"
-                >
-                  <FolderIcon className={`w-4 h-4 shrink-0 ${isSelected ? 'text-blue-400' : 'text-white/50'}`} />
-                  {editingFolderId === folder.id ? (
-                    <div className="flex items-center gap-1 w-full" onClick={e => e.stopPropagation()}>
-                      <input
-                        type="text"
-                        value={editName}
-                        onChange={e => setEditName(e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') handleUpdateFolder(folder);
-                          if (e.key === 'Escape') setEditingFolderId(null);
-                        }}
-                        className="bg-black/50 border border-blue-500/50 rounded px-2 py-0.5 text-sm w-full focus:outline-none focus:border-blue-400"
-                        autoFocus
-                      />
-                      <button onClick={() => handleUpdateFolder(folder)} className="p-1 text-green-400 hover:bg-white/10 rounded">
-                        <Check className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => setEditingFolderId(null)} className="p-1 text-red-400 hover:bg-white/10 rounded">
-                        <X className="w-4 h-4" />
-                      </button>
+                <div className="flex items-center gap-1 flex-1 min-w-0" style={{ paddingLeft: '0.5rem' }}>
+                  <button 
+                    onClick={(e) => toggleExpand(folder.id, e)}
+                    className={`p-1 rounded hover:bg-white/10 transition-colors ${hasChildren ? 'opacity-100' : 'opacity-0 cursor-default'}`}
+                    disabled={!hasChildren}
+                  >
+                    <div className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
+                      <ChevronRight className="w-4 h-4 text-white/50" />
                     </div>
-                  ) : (
-                    <span className="font-medium truncate text-sm">{folder.name}</span>
-                  )}
-                </button>
+                  </button>
+                  
+                  <button
+                    onClick={() => {
+                      onSelectFolder(folder.id);
+                      onClose();
+                    }}
+                    className="flex-1 flex items-center gap-2 text-left truncate"
+                  >
+                    <FolderIcon className={`w-4 h-4 shrink-0 ${isSelected ? 'text-blue-400' : 'text-white/50'}`} />
+                    {editingFolderId === folder.id ? (
+                      <div className="flex items-center gap-1 w-full" onClick={e => e.stopPropagation()}>
+                        <input
+                          type="text"
+                          value={editName}
+                          onChange={e => setEditName(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') handleUpdateFolder(folder);
+                            if (e.key === 'Escape') setEditingFolderId(null);
+                          }}
+                          className="bg-black/50 border border-blue-500/50 rounded px-2 py-0.5 text-sm w-full focus:outline-none focus:border-blue-400"
+                          autoFocus
+                        />
+                        <button onClick={() => handleUpdateFolder(folder)} className="p-1 text-green-400 hover:bg-white/10 rounded">
+                          <Check className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => setEditingFolderId(null)} className="p-1 text-red-400 hover:bg-white/10 rounded">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="font-medium truncate text-sm">{folder.name}</span>
+                    )}
+                  </button>
+                </div>
 
                 <div className="flex items-center gap-1">
                   <button
@@ -193,26 +194,30 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose }: Pro
         
         {isCreating && creatingParentId === parentId && (
           <div 
-            className="flex items-center gap-2 px-2 py-2 rounded-xl bg-white/5"
-            style={{ paddingLeft: `${depth * 1.2 + 2}rem` }}
+            className="flex items-center gap-2 pr-2 py-2 rounded-xl bg-white/5 w-full"
           >
-            <FolderIcon className="w-4 h-4 text-white/50 shrink-0" />
-            <div className="flex items-center gap-1 w-full">
-              <input
-                type="text"
-                value={editName}
-                onChange={e => setEditName(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') handleCreateFolder();
-                  if (e.key === 'Escape') {
-                    setIsCreating(false);
-                    setCreatingParentId(null);
-                  }
-                }}
-                placeholder="新文件夹名称..."
-                className="bg-transparent border-none outline-none text-sm text-white w-full"
-                autoFocus
-              />
+            <div className="flex items-center gap-1 flex-1 min-w-0" style={{ paddingLeft: '0.5rem' }}>
+              <div className="p-1 w-6 h-6" /> {/* Spacer for chevron */}
+              <FolderIcon className="w-4 h-4 text-white/50 shrink-0 mx-1" />
+              <div className="flex items-center gap-1 w-full">
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={e => setEditName(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') handleCreateFolder();
+                    if (e.key === 'Escape') {
+                      setIsCreating(false);
+                      setCreatingParentId(null);
+                    }
+                  }}
+                  placeholder="新文件夹名称..."
+                  className="bg-transparent border-none outline-none text-sm text-white w-full"
+                  autoFocus
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
               <button onClick={handleCreateFolder} className="p-1 text-green-400 hover:bg-white/10 rounded">
                 <Check className="w-4 h-4" />
               </button>

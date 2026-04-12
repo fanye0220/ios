@@ -120,33 +120,35 @@ export async function deleteFolder(id: string): Promise<void> {
   const tx = db.transaction(['folders', 'characters'], 'readwrite');
   
   const folderStore = tx.objectStore('folders');
-  const folderToDelete = await folderStore.get(id);
-  const parentId = folderToDelete?.parentId || null;
-
-  // Update subfolders to point to the deleted folder's parent
+  const charStore = tx.objectStore('characters');
+  
+  // Find all descendant folders
   const allFolders = await folderStore.getAll();
-  for (const f of allFolders) {
-    if (f.parentId === id) {
-      f.parentId = parentId;
-      await folderStore.put(f);
+  const folderIdsToDelete = new Set<string>([id]);
+  
+  let added = true;
+  while (added) {
+    added = false;
+    for (const f of allFolders) {
+      if (f.parentId && folderIdsToDelete.has(f.parentId) && !folderIdsToDelete.has(f.id)) {
+        folderIdsToDelete.add(f.id);
+        added = true;
+      }
     }
   }
 
-  await folderStore.delete(id);
-  
-  const charStore = tx.objectStore('characters');
-  const index = charStore.index('by-folder');
-  let cursor = await index.openCursor(id);
-  
-  while (cursor) {
-    const char = cursor.value;
-    if (parentId) {
-      char.folderId = parentId;
-    } else {
-      delete char.folderId;
+  // Delete all identified folders and move their characters to trash
+  for (const folderId of folderIdsToDelete) {
+    await folderStore.delete(folderId);
+    
+    const index = charStore.index('by-folder');
+    let cursor = await index.openCursor(folderId);
+    while (cursor) {
+      const char = cursor.value;
+      char.deletedAt = Date.now();
+      await cursor.update(char);
+      cursor = await cursor.continue();
     }
-    await cursor.update(char);
-    cursor = await cursor.continue();
   }
   
   await tx.done;

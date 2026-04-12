@@ -118,6 +118,17 @@ export function CharacterDetail({ id, onBack }: Props) {
     setCharacter(updatedChar);
   };
 
+  const updateField = async (field: string, value: any) => {
+    if (!character) return;
+    const updatedChar = { ...character };
+    let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
+    targetData[field] = value;
+    const promise = saveCharacter(updatedChar);
+    savePromiseRef.current = promise;
+    await promise;
+    setCharacter(updatedChar);
+  };
+
   const handleBack = async () => {
     if (isEditingTags) await handleUpdateTags(tempTags);
     if (isEditingSource) await handleUpdateSource(tempSource);
@@ -556,10 +567,7 @@ export function CharacterDetail({ id, onBack }: Props) {
                     </div>
                   ) : (
                     <>
-                      <Section title="描述" content={data.description} />
-                      <Section title="性格" content={data.personality} />
-                      <Section title="场景" content={data.scenario} />
-                      <Section title="系统提示词" content={data.system_prompt} />
+                      <Section title="描述" content={data.description} onSave={(val) => updateField('description', val)} />
                       
                       {character && (
                         <QuickRepliesSection 
@@ -580,18 +588,55 @@ export function CharacterDetail({ id, onBack }: Props) {
                   exit={{ opacity: 0, x: 20 }}
                   className="space-y-6"
                 >
-                  <Section title="首条消息" content={data.first_mes} />
+                  <Section title="首条消息" content={data.first_mes} onSave={(val) => updateField('first_mes', val)} />
                   
-                  {data.alternate_greetings && data.alternate_greetings.length > 0 && (
-                    <div className="space-y-4">
-                      <h3 className="text-lg font-semibold text-white/90 border-b border-white/10 pb-2">备用开场白</h3>
-                      {data.alternate_greetings.map((msg: string, i: number) => (
-                        <div key={i} className="mb-2">
-                          <TextPreview title={`备用开场白 ${i + 1}`} content={msg} />
-                        </div>
-                      ))}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                      <h3 className="text-lg font-semibold text-white/90">备用开场白</h3>
+                      <button 
+                        onClick={() => {
+                          const newGreetings = [...(data.alternate_greetings || []), ""];
+                          updateField('alternate_greetings', newGreetings);
+                        }} 
+                        className="text-purple-400 hover:text-purple-300 flex items-center gap-1 text-sm bg-purple-500/10 px-2 py-1 rounded-lg"
+                      >
+                        <Plus className="w-4 h-4" /> 添加
+                      </button>
                     </div>
-                  )}
+                    <div className="space-y-4">
+                      {data.alternate_greetings && data.alternate_greetings.length > 0 ? (
+                        data.alternate_greetings.map((msg: string, i: number) => (
+                          <div key={i} className="relative group">
+                            <TextPreview 
+                              title={`备用开场白 ${i + 1}`} 
+                              content={msg} 
+                              onSave={(val) => {
+                                const newGreetings = [...data.alternate_greetings];
+                                newGreetings[i] = val;
+                                updateField('alternate_greetings', newGreetings);
+                              }}
+                              initialEditMode={msg === ""}
+                            />
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (confirm('确定要删除这条备用开场白吗？')) {
+                                   const newGreetings = data.alternate_greetings.filter((_: any, idx: number) => idx !== i);
+                                   updateField('alternate_greetings', newGreetings);
+                                }
+                              }}
+                              className="absolute top-2 right-2 p-1.5 text-white/20 hover:text-red-400 hover:bg-white/10 rounded-lg transition-all z-10"
+                              title="删除"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-white/30 text-sm italic">暂无备用开场白</p>
+                      )}
+                    </div>
+                  </div>
                 </motion.div>
               )}
 
@@ -720,7 +765,29 @@ export function CharacterDetail({ id, onBack }: Props) {
   );
 }
 
-function FullScreenTextModal({ title, content, onClose }: { title: string; content: string; onClose: () => void }) {
+function FullScreenTextModal({ 
+  title, 
+  content, 
+  onClose,
+  onSave,
+  initialEditMode = false
+}: { 
+  title: string; 
+  content: string; 
+  onClose: () => void;
+  onSave?: (val: string) => void;
+  initialEditMode?: boolean;
+}) {
+  const [isEditing, setIsEditing] = useState(initialEditMode);
+  const [editValue, setEditValue] = useState(content);
+
+  const handleSave = () => {
+    if (onSave) {
+      onSave(editValue);
+    }
+    setIsEditing(false);
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 50 }}
@@ -733,37 +800,53 @@ function FullScreenTextModal({ title, content, onClose }: { title: string; conte
           <ArrowLeft className="w-6 h-6" />
         </button>
         <h2 className="text-lg font-bold truncate">{title}</h2>
+        {onSave && (
+          isEditing ? (
+            <button onClick={handleSave} className="ml-auto p-2 text-green-400 font-medium hover:bg-green-400/10 rounded-lg transition">
+              保存
+            </button>
+          ) : (
+            <button onClick={() => setIsEditing(true)} className="ml-auto p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition">
+              <Edit2 className="w-5 h-5" />
+            </button>
+          )
+        )}
       </header>
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 hide-scrollbar bg-slate-900">
-        <div className="max-w-2xl mx-auto">
-          <p className="text-white/90 whitespace-pre-wrap text-base sm:text-lg leading-relaxed sm:leading-loose">
-            {content}
-          </p>
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6 hide-scrollbar bg-slate-900 flex flex-col">
+        <div className="max-w-2xl mx-auto w-full flex-1 flex flex-col">
+          {isEditing ? (
+            <textarea 
+              value={editValue}
+              onChange={e => setEditValue(e.target.value)}
+              className="w-full flex-1 bg-black/40 border border-white/20 rounded-xl p-4 text-white/90 text-base sm:text-lg leading-relaxed sm:leading-loose focus:outline-none focus:border-purple-500 resize-none"
+              autoFocus
+            />
+          ) : (
+            <p className="text-white/90 whitespace-pre-wrap text-base sm:text-lg leading-relaxed sm:leading-loose">
+              {content}
+            </p>
+          )}
         </div>
       </div>
     </motion.div>
   );
 }
 
-function TextPreview({ title, content }: { title: string; content: string }) {
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  if (!content) return null;
+function TextPreview({ title, content, onSave, initialEditMode }: { title: string; content: string; onSave?: (val: string) => void; initialEditMode?: boolean }) {
+  const [isModalOpen, setIsModalOpen] = useState(initialEditMode || false);
 
   return (
     <>
       <div 
         onClick={() => setIsModalOpen(true)}
-        className="group relative cursor-pointer bg-white/5 hover:bg-white/10 p-4 rounded-xl border border-white/5 transition-colors"
+        className="group relative cursor-pointer bg-white/5 hover:bg-white/10 p-3 rounded-xl border border-white/10 transition-colors"
       >
-        <p 
-          className="text-white/80 whitespace-pre-wrap text-sm leading-relaxed"
-          style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
-        >
-          {content}
-        </p>
-        <div className="mt-3 text-purple-400 text-sm font-medium flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+        <div className="text-white/70 text-sm line-clamp-2 pr-8">
+          {content || <span className="text-white/30 italic">空内容...</span>}
+        </div>
+        <div className="mt-1.5 text-purple-400 text-xs font-medium flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
           <span>阅读全文</span>
-          <ChevronRight className="w-4 h-4" />
+          <ChevronRight className="w-3 h-3" />
         </div>
       </div>
 
@@ -773,6 +856,8 @@ function TextPreview({ title, content }: { title: string; content: string }) {
             title={title} 
             content={content} 
             onClose={() => setIsModalOpen(false)} 
+            onSave={onSave}
+            initialEditMode={initialEditMode && !content}
           />
         )}
       </AnimatePresence>
@@ -780,16 +865,39 @@ function TextPreview({ title, content }: { title: string; content: string }) {
   );
 }
 
-function Section({ title, content, disableExpand }: { title: string; content?: string; disableExpand?: boolean }) {
-  if (!content) return null;
+function Section({ title, content, onSave }: { title: string; content?: string; onSave?: (val: string) => void }) {
+  const [isAdding, setIsAdding] = useState(false);
+
   return (
     <div>
-      <h3 className="text-lg font-semibold text-white/90 border-b border-white/10 pb-2 mb-3">{title}</h3>
-      {disableExpand ? (
-        <p className="text-white/80 whitespace-pre-wrap text-sm leading-relaxed">{content}</p>
+      <div className="flex items-center justify-between border-b border-white/10 pb-2 mb-3">
+        <h3 className="text-lg font-semibold text-white/90">{title}</h3>
+        {(!content || content.trim() === '') && onSave && (
+          <button onClick={() => setIsAdding(true)} className="text-purple-400 hover:text-purple-300 flex items-center gap-1 text-sm bg-purple-500/10 px-2 py-1 rounded-lg transition">
+            <Plus className="w-4 h-4" /> 添加
+          </button>
+        )}
+      </div>
+      {content && content.trim() !== '' ? (
+        <TextPreview title={title} content={content} onSave={onSave} />
       ) : (
-        <TextPreview title={title} content={content} />
+        <p className="text-white/30 text-sm italic">暂无内容</p>
       )}
+
+      <AnimatePresence>
+        {isAdding && (
+          <FullScreenTextModal
+            title={`添加 ${title}`}
+            content=""
+            onClose={() => setIsAdding(false)}
+            onSave={(val) => {
+              if (onSave) onSave(val);
+              setIsAdding(false);
+            }}
+            initialEditMode={true}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
