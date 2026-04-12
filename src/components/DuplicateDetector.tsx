@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Copy, Trash2, X, AlertTriangle, CheckCircle2, Merge } from 'lucide-react';
+import { Copy, Trash2, X, AlertTriangle, CheckCircle2, Merge, MessageSquarePlus, Link, FileText } from 'lucide-react';
 import { CharacterCard, DuplicateGroup, findDuplicates, deleteCharacter, saveCharacter } from '../lib/db';
 
 interface Props {
@@ -31,7 +31,7 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
   };
 
   const handleMergeAndKeep = async (keptChar: CharacterCard, group: DuplicateGroup) => {
-    if (!confirm('确定要保留此卡，合并其他卡片的快捷回复(QR)和来源链接，并删除其他卡片吗？')) return;
+    if (!confirm('确定要保留此卡，合并其他卡片的快捷回复(QR)、来源链接和标签，并删除其他卡片吗？')) return;
 
     const otherChars = group.characters.filter(c => c.id !== keptChar.id);
     let updatedData = { ...keptChar.data };
@@ -42,7 +42,8 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
 
     let mergedQRs = [...(targetData.extensions.quick_replies || [])];
     let mergedSource = targetData.extensions.source || targetData.source || '';
-    let mergedNotes = targetData.creator_notes || '';
+    let mergedTags = [...(targetData.tags || [])];
+    let mergedQrFilename = targetData.extensions.qr_filename || '';
 
     for (const other of otherChars) {
       const otherTarget = other.data.data ? other.data.data : other.data;
@@ -56,26 +57,37 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
         }
       }
 
+      // Merge QR Filename
+      const otherQrFilename = otherTarget.extensions?.qr_filename;
+      if (!mergedQrFilename && otherQrFilename) {
+        mergedQrFilename = otherQrFilename;
+      }
+
       // Merge Source
       const otherSource = otherTarget.extensions?.source || otherTarget.source;
       if (!mergedSource && otherSource) {
         mergedSource = otherSource;
       }
 
-      // Merge Notes
-      const otherNotes = otherTarget.creator_notes;
-      if (!mergedNotes && otherNotes) {
-        mergedNotes = otherNotes;
+      // Merge Tags
+      const otherTags = otherTarget.tags || [];
+      for (const tag of otherTags) {
+        if (!mergedTags.includes(tag)) {
+          mergedTags.push(tag);
+        }
       }
     }
 
     targetData.extensions.quick_replies = mergedQRs;
     targetData.extensions.source = mergedSource;
-    if (updatedData.data) {
-      targetData.creator_notes = mergedNotes;
-    } else {
+    targetData.tags = mergedTags;
+    if (mergedQrFilename) {
+      targetData.extensions.qr_filename = mergedQrFilename;
+    }
+    
+    if (!updatedData.data) {
       updatedData.source = mergedSource;
-      updatedData.creator_notes = mergedNotes;
+      updatedData.tags = mergedTags;
     }
 
     const finalChar = { ...keptChar, data: updatedData };
@@ -134,13 +146,22 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
                 </div>
                 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {group.characters.map(char => (
+                  {group.characters.map(char => {
+                    const targetData = char.data.data ? char.data.data : char.data;
+                    const hasQR = targetData.extensions?.quick_replies?.length > 0;
+                    const hasSource = !!(targetData.extensions?.source || targetData.source);
+                    const hasNotes = !!targetData.creator_notes;
+                    const modifiedDate = char.originalFile?.lastModified 
+                      ? new Date(char.originalFile.lastModified) 
+                      : new Date(char.updatedAt || char.createdAt);
+
+                    return (
                     <div key={char.id} className="flex flex-col p-4 bg-black/20 rounded-xl border border-white/5">
                       <div 
-                        className="flex items-center gap-3 mb-3 cursor-pointer hover:bg-white/5 p-2 -m-2 rounded-lg transition"
+                        className="flex items-start gap-3 mb-3 cursor-pointer hover:bg-white/5 p-2 -m-2 rounded-lg transition"
                         onClick={() => onSelectChar(char.id)}
                       >
-                        <div className="w-12 h-12 rounded-lg overflow-hidden shrink-0 bg-black/50">
+                        <div className="w-12 h-12 rounded-lg overflow-hidden shrink-0 bg-black/50 mt-1">
                           <img 
                             src={char.avatarBlob ? URL.createObjectURL(char.avatarBlob) : char.avatarUrlFallback} 
                             alt={char.name} 
@@ -149,9 +170,14 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
                         </div>
                         <div className="flex-1 min-w-0">
                           <h4 className="font-medium text-white truncate">{char.name}</h4>
-                          <p className="text-xs text-white/40 mt-0.5">
-                            导入于: {new Date(char.createdAt).toLocaleDateString()}
+                          <p className="text-[10px] text-white/40 mt-1">
+                            修改于: {modifiedDate.toLocaleDateString()} {modifiedDate.toLocaleTimeString()}
                           </p>
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {hasQR && <span className="text-[9px] px-1.5 py-0.5 bg-blue-500/20 text-blue-300 rounded flex items-center gap-1"><MessageSquarePlus className="w-2.5 h-2.5"/> QR</span>}
+                            {hasSource && <span className="text-[9px] px-1.5 py-0.5 bg-green-500/20 text-green-300 rounded flex items-center gap-1"><Link className="w-2.5 h-2.5"/> 来源</span>}
+                            {hasNotes && <span className="text-[9px] px-1.5 py-0.5 bg-yellow-500/20 text-yellow-300 rounded flex items-center gap-1"><FileText className="w-2.5 h-2.5"/> 备注</span>}
+                          </div>
                         </div>
                       </div>
                       
@@ -172,7 +198,7 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
                         </button>
                       </div>
                     </div>
-                  ))}
+                  )})}
                 </div>
               </div>
             ))

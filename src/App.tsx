@@ -48,7 +48,10 @@ export default function App() {
         {selectedFolderId === 'trash' ? (
           <TrashBin onClose={() => { setSelectedFolderId(null); setRefreshKey(prev => prev + 1); }} />
         ) : selectedFolderId === 'duplicates' ? (
-          <DuplicateDetector onClose={() => { setSelectedFolderId(null); setRefreshKey(prev => prev + 1); }} />
+          <DuplicateDetector 
+            onClose={() => { setSelectedFolderId(null); setRefreshKey(prev => prev + 1); }} 
+            onSelectChar={setSelectedCharId}
+          />
         ) : (
           <CharacterList
             key={`${refreshKey}-${selectedFolderId}`}

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, FileJson, ChevronRight, Plus, Edit2, Power, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Check } from 'lucide-react';
+import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, FileJson, ChevronRight, Plus, Edit2, Power, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Check, Upload } from 'lucide-react';
 import { getCharacter, deleteCharacter, saveCharacter, CharacterCard, getFolders } from '../lib/db';
 import { parseTavernCard } from '../types/tavern';
 import { injectTavernData } from '../lib/png';
@@ -25,6 +25,8 @@ export function CharacterDetail({ id, onBack }: Props) {
   const [tempTags, setTempTags] = useState<string>('');
   const [isEditingSource, setIsEditingSource] = useState(false);
   const [tempSource, setTempSource] = useState<string>('');
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editNameValue, setEditNameValue] = useState('');
 
   const [avatarUrl, setAvatarUrl] = useState<string>('');
 
@@ -32,6 +34,7 @@ export function CharacterDetail({ id, onBack }: Props) {
     getCharacter(id).then(char => {
       setCharacter(char);
       if (char) {
+        setEditNameValue(char.name);
         if (char.avatarBlob) {
           const url = URL.createObjectURL(char.avatarBlob);
           setAvatarUrl(url);
@@ -41,6 +44,21 @@ export function CharacterDetail({ id, onBack }: Props) {
       }
     });
   }, [id]);
+
+  const handleNameSave = async () => {
+    if (!editNameValue.trim() || !character) return;
+    
+    const updatedChar = { ...character, name: editNameValue.trim() };
+    if (updatedChar.data.data) {
+      updatedChar.data.data.name = editNameValue.trim();
+    } else {
+      updatedChar.data.name = editNameValue.trim();
+    }
+    
+    await saveCharacter(updatedChar);
+    setCharacter(updatedChar);
+    setIsEditingName(false);
+  };
 
   useEffect(() => {
     return () => {
@@ -115,76 +133,63 @@ export function CharacterDetail({ id, onBack }: Props) {
   };
 
   const handleExportPng = async () => {
-    const safeName = getSafeFilename(character.name);
-    
     if (character.originalFile) {
       try {
-        const buffer = await character.originalFile.arrayBuffer();
-        const newBuffer = await injectTavernData(buffer, character.data);
-        const blob = new Blob([newBuffer], { type: 'image/png' });
+        const blob = character.originalFile;
+        const originalFileName = character.originalFile.name || `${getSafeFilename(character.name)}.png`;
+        const safeName = originalFileName.replace(/\.[^/.]+$/, ""); // remove extension
         
-        const hasQR = character.data.extensions?.quick_replies && character.data.extensions.quick_replies.length > 0;
+        const targetData = character.data.data ? character.data.data : character.data;
+        const hasQR = targetData.extensions?.quick_replies && targetData.extensions.quick_replies.length > 0;
         const hasAvatars = character.avatarHistory && character.avatarHistory.length > 0;
         
         if (hasQR || hasAvatars) {
           const zip = new JSZip();
           
-          let folderName = safeName;
-          if (character.folderId) {
-            const folders = await getFolders();
-            const folder = folders.find(f => f.id === character.folderId);
-            if (folder) {
-              folderName = getSafeFilename(folder.name);
+          zip.file(originalFileName, blob);
+          
+          if (hasQR) {
+            const qrFileName = targetData.extensions?.qr_filename || `${safeName}_qr.json`;
+            zip.file(qrFileName, JSON.stringify(targetData.extensions.quick_replies, null, 2));
+          }
+          
+          if (hasAvatars) {
+            const avatarsFolder = zip.folder('替换卡面');
+            if (avatarsFolder) {
+              character.avatarHistory!.forEach((avatarBlob, index) => {
+                let ext = 'png';
+                let fileName = `替换卡面_${index + 1}.${ext}`;
+                if (avatarBlob instanceof File) {
+                  fileName = avatarBlob.name;
+                } else {
+                  if (avatarBlob.type === 'image/jpeg') ext = 'jpg';
+                  else if (avatarBlob.type === 'image/webp') ext = 'webp';
+                  fileName = `替换卡面_${index + 1}.${ext}`;
+                }
+                avatarsFolder.file(fileName, avatarBlob);
+              });
             }
           }
           
-          const zipFolder = zip.folder(folderName);
-          
-          if (zipFolder) {
-            zipFolder.file(`${safeName}.png`, blob);
-            
-            if (hasQR) {
-              zipFolder.file(`quick_replies.json`, JSON.stringify(character.data.extensions.quick_replies, null, 2));
-            }
-            
-            if (hasAvatars) {
-              const avatarsFolder = zipFolder.folder('替换卡面');
-              if (avatarsFolder) {
-                character.avatarHistory!.forEach((avatarBlob, index) => {
-                  let ext = 'png';
-                  let fileName = `替换卡面_${index + 1}.${ext}`;
-                  if (avatarBlob instanceof File) {
-                    fileName = avatarBlob.name;
-                  } else {
-                    if (avatarBlob.type === 'image/jpeg') ext = 'jpg';
-                    else if (avatarBlob.type === 'image/webp') ext = 'webp';
-                    fileName = `替换卡面_${index + 1}.${ext}`;
-                  }
-                  avatarsFolder.file(fileName, avatarBlob);
-                });
-              }
-            }
-            
-            const zipBlob = await zip.generateAsync({ type: 'blob' });
-            const url = URL.createObjectURL(zipBlob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${folderName}.zip`;
-            a.click();
-            URL.revokeObjectURL(url);
-            return;
-          }
+          const zipBlob = await zip.generateAsync({ type: 'blob' });
+          const url = URL.createObjectURL(zipBlob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `${safeName}.zip`;
+          a.click();
+          URL.revokeObjectURL(url);
+          return;
         }
 
-        // Fallback to just PNG if no QR/Avatars or zip fails
+        // Fallback to just PNG if no QR/Avatars
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${safeName}.png`;
+        a.download = originalFileName;
         a.click();
         URL.revokeObjectURL(url);
       } catch (e) {
-        console.error("Failed to inject data into PNG", e);
+        console.error("Failed to export PNG", e);
         setShowExportAlert(true);
         handleExportJson();
       }
@@ -285,7 +290,49 @@ export function CharacterDetail({ id, onBack }: Props) {
             onClick={() => setShowAvatarViewer(true)}
             className="w-32 h-32 rounded-full object-cover border-4 border-white/20 shadow-2xl cursor-pointer hover:scale-105 transition-transform"
           />
-          <h1 className="text-3xl font-bold mt-4 text-center">{character.name}</h1>
+          {isEditingName ? (
+            <div className="flex items-center gap-2 mt-4">
+              <input
+                type="text"
+                value={editNameValue}
+                onChange={(e) => setEditNameValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleNameSave();
+                  if (e.key === 'Escape') {
+                    setIsEditingName(false);
+                    setEditNameValue(character.name);
+                  }
+                }}
+                className="bg-black/40 border border-white/20 rounded-lg px-3 py-1 text-2xl font-bold text-center w-48 focus:outline-none focus:border-purple-500"
+                autoFocus
+              />
+              <button 
+                onClick={handleNameSave}
+                className="p-1.5 bg-green-500/20 text-green-400 rounded-lg hover:bg-green-500/30 transition"
+              >
+                <Check className="w-5 h-5" />
+              </button>
+              <button 
+                onClick={() => {
+                  setIsEditingName(false);
+                  setEditNameValue(character.name);
+                }}
+                className="p-1.5 bg-white/10 text-white/60 rounded-lg hover:bg-white/20 transition"
+              >
+                <XIcon className="w-5 h-5" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 mt-4 group">
+              <h1 className="text-3xl font-bold text-center">{character.name}</h1>
+              <button 
+                onClick={() => setIsEditingName(true)}
+                className="opacity-0 group-hover:opacity-100 p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-lg transition"
+              >
+                <Edit2 className="w-4 h-4" />
+              </button>
+            </div>
+          )}
           <p className="text-white/60 text-sm mt-1">v{data.character_version || '1.0'} • {data.creator || 'Unknown Creator'}</p>
           
           {/* Metadata Drawer */}
@@ -568,20 +615,65 @@ export function CharacterDetail({ id, onBack }: Props) {
                     <div className="flex flex-col items-center justify-center h-48 text-white/40">
                       <Book className="w-12 h-12 mb-2 opacity-50" />
                       <p>未包含世界书数据</p>
-                      <button 
-                        onClick={() => {
-                          const newBook = { name: '新世界书', description: '', entries: [] };
-                          const updatedChar = { ...character };
-                          let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
-                          
-                          targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
-                          
-                          saveCharacter(updatedChar).then(() => setCharacter(updatedChar));
-                        }}
-                        className="mt-4 px-4 py-2 bg-purple-500/20 text-purple-300 rounded-lg hover:bg-purple-500/30 transition flex items-center gap-2"
-                      >
-                        <Plus className="w-4 h-4" /> 创建世界书
-                      </button>
+                      <div className="flex gap-3 mt-4">
+                        <button 
+                          onClick={() => {
+                            const newBook = { name: '新世界书', description: '', entries: [] };
+                            const updatedChar = { ...character };
+                            let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
+                            
+                            targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
+                            
+                            saveCharacter(updatedChar).then(() => setCharacter(updatedChar));
+                          }}
+                          className="px-4 py-2 bg-purple-500/20 text-purple-300 rounded-lg hover:bg-purple-500/30 transition flex items-center gap-2"
+                        >
+                          <Plus className="w-4 h-4" /> 创建世界书
+                        </button>
+                        <label className="px-4 py-2 bg-blue-500/20 text-blue-300 rounded-lg hover:bg-blue-500/30 transition flex items-center gap-2 cursor-pointer">
+                          <Upload className="w-4 h-4" /> 导入世界书
+                          <input 
+                            type="file" 
+                            accept=".json" 
+                            className="hidden" 
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              try {
+                                const text = await file.text();
+                                const json = JSON.parse(text);
+                                
+                                // Handle both array format and object format (like the provided example)
+                                let entries = [];
+                                if (Array.isArray(json.entries)) {
+                                  entries = json.entries;
+                                } else if (json.entries && typeof json.entries === 'object') {
+                                  entries = Object.values(json.entries);
+                                } else if (Array.isArray(json)) {
+                                  entries = json;
+                                }
+
+                                const newBook = { 
+                                  name: json.name || file.name.replace('.json', ''), 
+                                  description: json.description || '', 
+                                  entries: entries 
+                                };
+
+                                const updatedChar = { ...character };
+                                let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
+                                
+                                targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
+                                
+                                await saveCharacter(updatedChar);
+                                setCharacter(updatedChar);
+                              } catch (err) {
+                                alert('导入失败：不是有效的 JSON 文件');
+                              }
+                              e.target.value = '';
+                            }}
+                          />
+                        </label>
+                      </div>
                     </div>
                   )}
                 </motion.div>

@@ -7,13 +7,65 @@ interface Props {
   onClose: () => void;
 }
 
+const TrashedCharacterCard = ({ char, onRestore, onHardDelete }: { char: CharacterCard, onRestore: (id: string) => void, onHardDelete: (id: string) => void }) => {
+  const [avatarUrl, setAvatarUrl] = useState<string>(char.avatarUrlFallback);
+
+  useEffect(() => {
+    if (char.avatarBlob) {
+      const url = URL.createObjectURL(char.avatarBlob);
+      setAvatarUrl(url);
+      return () => URL.revokeObjectURL(url);
+    }
+  }, [char.avatarBlob]);
+
+  const daysLeft = Math.ceil((7 * 24 * 60 * 60 * 1000 - (Date.now() - (char.deletedAt || 0))) / (1000 * 60 * 60 * 24));
+
+  return (
+    <div className="flex items-center gap-4 p-4 bg-white/5 border border-white/10 rounded-2xl">
+      <div className="w-16 h-16 rounded-xl overflow-hidden shrink-0 bg-black/50">
+        <img 
+          src={avatarUrl} 
+          alt={char.name} 
+          className="w-full h-full object-cover" 
+        />
+      </div>
+      <div className="flex-1 min-w-0">
+        <h3 className="font-medium text-white truncate">{char.name}</h3>
+        <p className="text-xs text-red-400/80 mt-1 flex items-center gap-1">
+          <AlertTriangle className="w-3 h-3" />
+          {daysLeft} 天后永久删除
+        </p>
+      </div>
+      <div className="flex flex-col gap-2 shrink-0">
+        <button
+          onClick={() => onRestore(char.id)}
+          className="p-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl transition"
+          title="恢复"
+        >
+          <RotateCcw className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => onHardDelete(char.id)}
+          className="p-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl transition"
+          title="永久删除"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export function TrashBin({ onClose }: Props) {
   const [trashedCharacters, setTrashedCharacters] = useState<CharacterCard[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const loadTrash = async () => {
+    setLoading(true);
     await cleanupOldTrash();
     const data = await getTrashedCharacters();
     setTrashedCharacters(data);
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -58,7 +110,7 @@ export function TrashBin({ onClose }: Props) {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {trashedCharacters.length > 0 && (
+            {trashedCharacters.length > 0 && !loading && (
               <button
                 onClick={handleEmptyTrash}
                 className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl transition font-medium text-sm"
@@ -73,50 +125,26 @@ export function TrashBin({ onClose }: Props) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
-          {trashedCharacters.length === 0 ? (
+          {loading ? (
+            <div className="flex flex-col items-center justify-center h-full text-white/40">
+              <div className="w-8 h-8 border-4 border-red-500 border-t-transparent rounded-full animate-spin mb-4" />
+              <p>加载中...</p>
+            </div>
+          ) : trashedCharacters.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-white/40">
               <Trash2 className="w-16 h-16 mb-4 opacity-50" />
               <p>回收站是空的</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {trashedCharacters.map(char => {
-                const daysLeft = Math.ceil((7 * 24 * 60 * 60 * 1000 - (Date.now() - (char.deletedAt || 0))) / (1000 * 60 * 60 * 24));
-                return (
-                  <div key={char.id} className="flex items-center gap-4 p-4 bg-white/5 border border-white/10 rounded-2xl">
-                    <div className="w-16 h-16 rounded-xl overflow-hidden shrink-0 bg-black/50">
-                      <img 
-                        src={char.avatarBlob ? URL.createObjectURL(char.avatarBlob) : char.avatarUrlFallback} 
-                        alt={char.name} 
-                        className="w-full h-full object-cover" 
-                      />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-medium text-white truncate">{char.name}</h3>
-                      <p className="text-xs text-red-400/80 mt-1 flex items-center gap-1">
-                        <AlertTriangle className="w-3 h-3" />
-                        {daysLeft} 天后永久删除
-                      </p>
-                    </div>
-                    <div className="flex flex-col gap-2 shrink-0">
-                      <button
-                        onClick={() => handleRestore(char.id)}
-                        className="p-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl transition"
-                        title="恢复"
-                      >
-                        <RotateCcw className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleHardDelete(char.id)}
-                        className="p-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl transition"
-                        title="永久删除"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+              {trashedCharacters.map(char => (
+                <TrashedCharacterCard 
+                  key={char.id} 
+                  char={char} 
+                  onRestore={handleRestore} 
+                  onHardDelete={handleHardDelete} 
+                />
+              ))}
             </div>
           )}
         </div>

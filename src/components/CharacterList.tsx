@@ -187,19 +187,21 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
   const addCharacterToZip = async (char: CharacterCard, zipFolder: JSZip) => {
     const safeName = getSafeFilename(char.name);
     if (char.originalFile) {
-      const buffer = await char.originalFile.arrayBuffer();
-      const newBuffer = await injectTavernData(buffer, char.data);
-      const blob = new Blob([newBuffer], { type: 'image/png' });
+      const blob = char.originalFile;
+      const originalFileName = char.originalFile.name || `${safeName}.png`;
+      const baseName = originalFileName.replace(/\.[^/.]+$/, ""); // remove extension
       
-      const hasQR = char.data.extensions?.quick_replies && char.data.extensions.quick_replies.length > 0;
+      const targetData = char.data.data ? char.data.data : char.data;
+      const hasQR = targetData.extensions?.quick_replies && targetData.extensions.quick_replies.length > 0;
       const hasAvatars = char.avatarHistory && char.avatarHistory.length > 0;
       
       if (hasQR || hasAvatars) {
         const charFolder = zipFolder.folder(safeName);
         if (charFolder) {
-          charFolder.file(`${safeName}.png`, blob);
+          charFolder.file(originalFileName, blob);
           if (hasQR) {
-            charFolder.file(`quick_replies.json`, JSON.stringify(char.data.extensions.quick_replies, null, 2));
+            const qrFileName = targetData.extensions?.qr_filename || `${baseName}_qr.json`;
+            charFolder.file(qrFileName, JSON.stringify(targetData.extensions.quick_replies, null, 2));
           }
           if (hasAvatars) {
             const avatarsFolder = charFolder.folder('替换卡面');
@@ -220,7 +222,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
           }
         }
       } else {
-        zipFolder.file(`${safeName}.png`, blob);
+        zipFolder.file(originalFileName, blob);
       }
     } else {
       zipFolder.file(`${safeName}.json`, JSON.stringify(char.data, null, 2));

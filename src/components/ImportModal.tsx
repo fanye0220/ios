@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, UploadCloud, FileJson, Image as ImageIcon, Folder } from 'lucide-react';
+import { X, UploadCloud, FileJson, Image as ImageIcon, Folder, AlertCircle } from 'lucide-react';
 import { extractTavernData } from '../lib/png';
 import { saveCharacter, CharacterCard, getFolders, saveFolder, Folder as DBFolder } from '../lib/db';
 import { parseTavernCard } from '../types/tavern';
@@ -15,6 +15,7 @@ interface Props {
 export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [importErrors, setImportErrors] = useState<{file: string, error: string}[]>([]);
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -34,23 +35,11 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
     return newFolder.id;
   };
 
-  const handleFiles = async (files: FileList | File[]) => {
-    setError(null);
-    const fileArray = Array.from(files).filter(f => 
-      f.type === 'image/png' || f.name.endsWith('.png') || 
-      f.type === 'application/json' || f.name.endsWith('.json')
-    );
-
-    if (fileArray.length === 0) {
-      setError("No valid PNG or JSON files found.");
-      return;
-    }
-
-    setProgress({ current: 0, total: fileArray.length });
-    let successCount = 0;
-
-    for (let i = 0; i < fileArray.length; i++) {
-      const file = fileArray[i];
+  const processChunk = async (files: File[], startIndex: number, chunkSize: number, total: number, successCount: number, errors: {file: string, error: string}[]) => {
+    const endIndex = Math.min(startIndex + chunkSize, total);
+    
+    for (let i = startIndex; i < endIndex; i++) {
+      const file = files[i];
       try {
         let data: any = null;
         let avatarBlob: Blob | undefined;
@@ -106,18 +95,48 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
         successCount++;
       } catch (err: any) {
         console.error(`Failed to import ${file.name}:`, err);
-        setError(err.message || `导入 ${file.name} 失败`);
+        errors.push({ file: file.name, error: err.message || '未知错误' });
       }
-      setProgress({ current: i + 1, total: fileArray.length });
+      setProgress({ current: i + 1, total });
     }
 
-    setProgress(null);
-    if (successCount === 0) {
-      setError("Failed to import any characters.");
+    if (endIndex < total) {
+      // Yield to main thread
+      setTimeout(() => processChunk(files, endIndex, chunkSize, total, successCount, errors), 0);
     } else {
-      onImported();
-      onClose();
+      // Done
+      setProgress(null);
+      if (errors.length > 0) {
+        setImportErrors(errors);
+        if (successCount > 0) {
+          onImported();
+        }
+      } else if (successCount === 0) {
+        setError("未能成功导入任何文件。");
+      } else {
+        onImported();
+        onClose();
+      }
     }
+  };
+
+  const handleFiles = async (files: FileList | File[]) => {
+    setError(null);
+    setImportErrors([]);
+    const fileArray = Array.from(files).filter(f => 
+      f.type === 'image/png' || f.name.endsWith('.png') || 
+      f.type === 'application/json' || f.name.endsWith('.json')
+    );
+
+    if (fileArray.length === 0) {
+      setError("未找到有效的 PNG 或 JSON 文件。");
+      return;
+    }
+
+    setProgress({ current: 0, total: fileArray.length });
+    
+    // Process in chunks of 50 to avoid blocking UI
+    processChunk(fileArray, 0, 50, fileArray.length, 0, []);
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -165,7 +184,33 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
               )}
             </div>
 
-            {progress ? (
+            {importErrors.length > 0 ? (
+              <div className="py-4 flex flex-col max-h-[60vh]">
+                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex-1 overflow-y-auto">
+                  <div className="flex items-center gap-2 text-red-400 mb-3 sticky top-0 bg-slate-900/90 backdrop-blur-sm py-1">
+                    <AlertCircle className="w-5 h-5" />
+                    <h3 className="font-bold">部分文件导入失败 ({importErrors.length})</h3>
+                  </div>
+                  <ul className="space-y-2 text-sm text-red-300/80">
+                    {importErrors.map((err, i) => (
+                      <li key={i} className="flex flex-col bg-black/20 p-2 rounded">
+                        <span className="font-medium text-red-300 truncate">{err.file}</span>
+                        <span className="text-xs opacity-80 mt-0.5">{err.error}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <button 
+                  onClick={() => {
+                    setImportErrors([]);
+                    onClose();
+                  }}
+                  className="w-full mt-4 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-medium transition"
+                >
+                  关闭
+                </button>
+              </div>
+            ) : progress ? (
               <div className="py-8 flex flex-col items-center">
                 <div className="w-16 h-16 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-4" />
                 <p className="text-lg font-medium">导入中...</p>

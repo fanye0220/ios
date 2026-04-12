@@ -125,16 +125,18 @@ export async function getCharacters(
 
   if (searchQuery) {
     const query = searchQuery.toLowerCase();
-    allCharacters = allCharacters.filter(c => 
-      c.name.toLowerCase().includes(query) || 
-      (c.data?.tags && c.data.tags.some((t: string) => t.toLowerCase().includes(query)))
-    );
+    allCharacters = allCharacters.filter(c => {
+      const charTags = c.data?.tags || c.data?.data?.tags;
+      return c.name.toLowerCase().includes(query) || 
+        (charTags && charTags.some((t: string) => t.toLowerCase().includes(query)));
+    });
   }
 
   if (tags.length > 0) {
-    allCharacters = allCharacters.filter(c => 
-      c.data?.tags && tags.every(t => c.data.tags.includes(t))
-    );
+    allCharacters = allCharacters.filter(c => {
+      const charTags = c.data?.tags || c.data?.data?.tags;
+      return charTags && tags.every(t => charTags.includes(t));
+    });
   }
 
   if (folderId === null) {
@@ -157,8 +159,9 @@ export async function getAllTags(): Promise<string[]> {
   const characters = await db.getAll('characters');
   const tags = new Set<string>();
   characters.forEach(c => {
-    if (c.data?.tags && Array.isArray(c.data.tags)) {
-      c.data.tags.forEach((t: string) => tags.add(t));
+    const charTags = c.data?.tags || c.data?.data?.tags;
+    if (charTags && Array.isArray(charTags)) {
+      charTags.forEach((t: string) => tags.add(t));
     }
   });
   return Array.from(tags).sort();
@@ -171,10 +174,14 @@ export async function renameTag(oldTag: string, newTag: string): Promise<void> {
   const characters = await store.getAll();
   
   for (const char of characters) {
-    if (char.data?.tags && Array.isArray(char.data.tags) && char.data.tags.includes(oldTag)) {
-      char.data.tags = char.data.tags.map((t: string) => t === oldTag ? newTag : t);
-      // Remove duplicates just in case
-      char.data.tags = Array.from(new Set(char.data.tags));
+    const charTags = char.data?.tags || char.data?.data?.tags;
+    if (charTags && Array.isArray(charTags) && charTags.includes(oldTag)) {
+      const newTags = charTags.map((t: string) => t === oldTag ? newTag : t);
+      if (char.data?.data) {
+        char.data.data.tags = Array.from(new Set(newTags));
+      } else {
+        char.data.tags = Array.from(new Set(newTags));
+      }
       await store.put(char);
     }
   }
@@ -188,8 +195,14 @@ export async function deleteTag(tagToDelete: string): Promise<void> {
   const characters = await store.getAll();
   
   for (const char of characters) {
-    if (char.data?.tags && Array.isArray(char.data.tags) && char.data.tags.includes(tagToDelete)) {
-      char.data.tags = char.data.tags.filter((t: string) => t !== tagToDelete);
+    const charTags = char.data?.tags || char.data?.data?.tags;
+    if (charTags && Array.isArray(charTags) && charTags.includes(tagToDelete)) {
+      const newTags = charTags.filter((t: string) => t !== tagToDelete);
+      if (char.data?.data) {
+        char.data.data.tags = newTags;
+      } else {
+        char.data.tags = newTags;
+      }
       await store.put(char);
     }
   }
