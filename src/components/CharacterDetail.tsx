@@ -417,15 +417,30 @@ export function CharacterDetail({ id, onBack }: Props) {
                         </button>
                       </div>
                       {isEditingTags ? (
-                        <input 
-                          value={tempTags} 
-                          onChange={e => setTempTags(e.target.value)} 
-                          className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-purple-500/50"
-                          placeholder="输入标签，用逗号分隔"
-                          autoFocus
-                          onBlur={() => handleUpdateTags(tempTags)}
-                          onKeyDown={e => e.key === 'Enter' && handleUpdateTags(tempTags)}
-                        />
+                        <div className="flex items-center gap-2">
+                          <input 
+                            value={tempTags} 
+                            onChange={e => {
+                              // If user typed a space, replace it with a comma and space
+                              const val = e.target.value;
+                              if (val.endsWith(' ') && !val.endsWith(', ')) {
+                                setTempTags(val.slice(0, -1) + ', ');
+                              } else {
+                                setTempTags(val);
+                              }
+                            }} 
+                            className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-purple-500/50"
+                            placeholder="输入标签，用逗号或空格分隔"
+                            autoFocus
+                            onKeyDown={e => e.key === 'Enter' && handleUpdateTags(tempTags)}
+                          />
+                          <button onClick={() => handleUpdateTags(tempTags)} className="p-2 bg-green-500/20 text-green-400 rounded-xl hover:bg-green-500/30 transition shrink-0">
+                            <Check className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => setIsEditingTags(false)} className="p-2 bg-white/10 text-white/60 rounded-xl hover:bg-white/20 transition shrink-0">
+                            <XIcon className="w-4 h-4" />
+                          </button>
+                        </div>
                       ) : (
                         <div className="bg-white/5 rounded-xl px-3 py-2 text-sm text-white/80 min-h-[36px] flex flex-wrap gap-1">
                           {data.tags && data.tags.length > 0 ? (
@@ -456,15 +471,22 @@ export function CharacterDetail({ id, onBack }: Props) {
                         </button>
                       </div>
                       {isEditingSource ? (
-                        <input 
-                          value={tempSource} 
-                          onChange={e => setTempSource(e.target.value)} 
-                          className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-purple-500/50"
-                          placeholder="https://..."
-                          autoFocus
-                          onBlur={() => handleUpdateSource(tempSource)}
-                          onKeyDown={e => e.key === 'Enter' && handleUpdateSource(tempSource)}
-                        />
+                        <div className="flex items-center gap-2">
+                          <input 
+                            value={tempSource} 
+                            onChange={e => setTempSource(e.target.value)} 
+                            className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-purple-500/50"
+                            placeholder="https://..."
+                            autoFocus
+                            onKeyDown={e => e.key === 'Enter' && handleUpdateSource(tempSource)}
+                          />
+                          <button onClick={() => handleUpdateSource(tempSource)} className="p-2 bg-green-500/20 text-green-400 rounded-xl hover:bg-green-500/30 transition shrink-0">
+                            <Check className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => setIsEditingSource(false)} className="p-2 bg-white/10 text-white/60 rounded-xl hover:bg-white/20 transition shrink-0">
+                            <XIcon className="w-4 h-4" />
+                          </button>
+                        </div>
                       ) : (
                         <div className="bg-white/5 rounded-xl px-3 py-2 text-sm text-white/80 min-h-[36px] truncate flex items-center justify-between">
                           {data.extensions?.source || data.source ? (

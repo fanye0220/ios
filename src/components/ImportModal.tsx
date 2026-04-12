@@ -358,10 +358,10 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
                     className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 rounded-xl transition text-sm text-slate-300"
                   >
                     <Folder className="w-4 h-4" />
-                    选择单个文件夹
+                    选择单个文件夹 (仅限电脑端)
                   </button>
                   <p className="text-xs text-slate-500 text-center">
-                    提示：如需导入多个文件夹，请直接将它们拖拽到上方区域
+                    提示：手机端受系统限制无法直接选择文件夹，请将文件夹打包成 ZIP 压缩包后上传，或直接多选文件。
                   </p>
                 </div>
 

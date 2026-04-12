@@ -121,25 +121,19 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose, onOpe
                   >
                     <FolderIcon className={`w-4 h-4 shrink-0 ${isSelected ? 'text-blue-400' : 'text-white/50'}`} />
                     {editingFolderId === folder.id ? (
-                      <div className="flex items-center gap-1 w-full" onClick={e => e.stopPropagation()}>
-                        <input
-                          type="text"
-                          value={editName}
-                          onChange={e => setEditName(e.target.value)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') handleUpdateFolder(folder);
-                            if (e.key === 'Escape') setEditingFolderId(null);
-                          }}
-                          className="bg-black/50 border border-blue-500/50 rounded px-2 py-0.5 text-sm w-full focus:outline-none focus:border-blue-400"
-                          autoFocus
-                        />
-                        <button onClick={() => handleUpdateFolder(folder)} className="p-1 text-green-400 hover:bg-white/10 rounded">
-                          <Check className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => setEditingFolderId(null)} className="p-1 text-red-400 hover:bg-white/10 rounded">
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={e => setEditName(e.target.value)}
+                        onBlur={() => handleUpdateFolder(folder)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') handleUpdateFolder(folder);
+                          if (e.key === 'Escape') setEditingFolderId(null);
+                        }}
+                        onClick={e => e.stopPropagation()}
+                        className="bg-black/50 border border-blue-500/50 rounded px-2 py-0.5 text-sm w-full focus:outline-none focus:border-blue-400"
+                        autoFocus
+                      />
                     ) : (
                       <span className="font-medium truncate text-sm">{folder.name}</span>
                     )}
@@ -200,31 +194,22 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose, onOpe
             <div className="flex items-center gap-1 flex-1 min-w-0" style={{ paddingLeft: '0.5rem' }}>
               <div className="p-1 w-6 h-6" /> {/* Spacer for chevron */}
               <FolderIcon className="w-4 h-4 text-white/50 shrink-0 mx-1" />
-              <div className="flex items-center gap-1 w-full">
-                <input
-                  type="text"
-                  value={editName}
-                  onChange={e => setEditName(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') handleCreateFolder();
-                    if (e.key === 'Escape') {
-                      setIsCreating(false);
-                      setCreatingParentId(null);
-                    }
-                  }}
-                  placeholder="新文件夹名称..."
-                  className="bg-transparent border-none outline-none text-sm text-white w-full"
-                  autoFocus
-                />
-              </div>
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
-              <button onClick={handleCreateFolder} className="p-1 text-green-400 hover:bg-white/10 rounded">
-                <Check className="w-4 h-4" />
-              </button>
-              <button onClick={() => { setIsCreating(false); setCreatingParentId(null); }} className="p-1 text-red-400 hover:bg-white/10 rounded">
-                <X className="w-4 h-4" />
-              </button>
+              <input
+                type="text"
+                value={editName}
+                onChange={e => setEditName(e.target.value)}
+                onBlur={handleCreateFolder}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleCreateFolder();
+                  if (e.key === 'Escape') {
+                    setIsCreating(false);
+                    setCreatingParentId(null);
+                  }
+                }}
+                placeholder="新文件夹名称..."
+                className="bg-transparent border-none outline-none text-sm text-white w-full"
+                autoFocus
+              />
             </div>
           </div>
         )}
