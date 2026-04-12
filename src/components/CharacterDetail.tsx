@@ -27,6 +27,7 @@ export function CharacterDetail({ id, onBack }: Props) {
   const [tempSource, setTempSource] = useState<string>('');
   const [isEditingName, setIsEditingName] = useState(false);
   const [editNameValue, setEditNameValue] = useState('');
+  const [isAddingAlternate, setIsAddingAlternate] = useState(false);
 
   const [avatarUrl, setAvatarUrl] = useState<string>('');
   const savePromiseRef = useRef<Promise<void> | null>(null);
@@ -619,10 +620,7 @@ export function CharacterDetail({ id, onBack }: Props) {
                     <div className="flex items-center justify-between border-b border-white/10 pb-2">
                       <h3 className="text-lg font-semibold text-white/90">备用开场白</h3>
                       <button 
-                        onClick={() => {
-                          const newGreetings = [...(data.alternate_greetings || []), ""];
-                          updateField('alternate_greetings', newGreetings);
-                        }} 
+                        onClick={() => setIsAddingAlternate(true)} 
                         className="text-purple-400 hover:text-purple-300 flex items-center gap-1 text-sm bg-purple-500/10 px-2 py-1 rounded-lg"
                       >
                         <Plus className="w-4 h-4" /> 添加
@@ -631,37 +629,44 @@ export function CharacterDetail({ id, onBack }: Props) {
                     <div className="space-y-4">
                       {data.alternate_greetings && data.alternate_greetings.length > 0 ? (
                         data.alternate_greetings.map((msg: string, i: number) => (
-                          <div key={i} className="relative group">
-                            <TextPreview 
-                              title={`备用开场白 ${i + 1}`} 
-                              content={msg} 
-                              onSave={(val) => {
-                                const newGreetings = [...data.alternate_greetings];
-                                newGreetings[i] = val;
-                                updateField('alternate_greetings', newGreetings);
-                              }}
-                              initialEditMode={msg === ""}
-                            />
-                            <button 
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (confirm('确定要删除这条备用开场白吗？')) {
-                                   const newGreetings = data.alternate_greetings.filter((_: any, idx: number) => idx !== i);
-                                   updateField('alternate_greetings', newGreetings);
-                                }
-                              }}
-                              className="absolute top-2 right-2 p-1.5 text-white/20 hover:text-red-400 hover:bg-white/10 rounded-lg transition-all z-10"
-                              title="删除"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
+                          <AlternateGreetingCard
+                            key={i}
+                            index={i}
+                            content={msg}
+                            onSave={(val) => {
+                              const newGreetings = [...data.alternate_greetings];
+                              newGreetings[i] = val;
+                              updateField('alternate_greetings', newGreetings);
+                            }}
+                            onDelete={() => {
+                              if (confirm('确定要删除这条备用开场白吗？')) {
+                                 const newGreetings = data.alternate_greetings.filter((_: any, idx: number) => idx !== i);
+                                 updateField('alternate_greetings', newGreetings);
+                              }
+                            }}
+                          />
                         ))
                       ) : (
                         <p className="text-white/30 text-sm italic">暂无备用开场白</p>
                       )}
                     </div>
                   </div>
+
+                  <AnimatePresence>
+                    {isAddingAlternate && (
+                      <FullScreenTextModal
+                        title="添加备用开场白"
+                        content=""
+                        onClose={() => setIsAddingAlternate(false)}
+                        onSave={(val) => {
+                          const newGreetings = [...(data.alternate_greetings || []), val];
+                          updateField('alternate_greetings', newGreetings);
+                          setIsAddingAlternate(false);
+                        }}
+                        initialEditMode={true}
+                      />
+                    )}
+                  </AnimatePresence>
                 </motion.div>
               )}
 
@@ -679,11 +684,8 @@ export function CharacterDetail({ id, onBack }: Props) {
                         const updatedChar = { ...character };
                         let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
                         
-                        if (targetData.character_book) {
-                          targetData.character_book = newBook;
-                        } else {
-                          targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
-                        }
+                        targetData.character_book = newBook;
+                        targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
                         
                         saveCharacter(updatedChar).then(() => setCharacter(updatedChar));
                       }}
@@ -710,6 +712,7 @@ export function CharacterDetail({ id, onBack }: Props) {
                             const updatedChar = { ...character };
                             let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
                             
+                            targetData.character_book = newBook;
                             targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
                             
                             saveCharacter(updatedChar).then(() => setCharacter(updatedChar));
@@ -750,6 +753,7 @@ export function CharacterDetail({ id, onBack }: Props) {
                                 const updatedChar = { ...character };
                                 let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
                                 
+                                targetData.character_book = newBook;
                                 targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
                                 
                                 await saveCharacter(updatedChar);
@@ -883,6 +887,54 @@ function TextPreview({ title, content, onSave, initialEditMode }: { title: strin
             onClose={() => setIsModalOpen(false)} 
             onSave={onSave}
             initialEditMode={initialEditMode && !content}
+          />
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
+function AlternateGreetingCard({ index, content, onSave, onDelete }: { index: number; content: string; onSave: (val: string) => void; onDelete: () => void }) {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  return (
+    <>
+      <div className="bg-white/5 p-3 rounded-xl border border-white/10 flex gap-3 transition-opacity hover:bg-white/10">
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap sm:flex-nowrap justify-between items-start gap-2 mb-1">
+            <div className="flex flex-col min-w-0 flex-1">
+              <h4 className="font-semibold text-purple-300 truncate">
+                备用开场白 {index + 1}
+              </h4>
+            </div>
+            <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+              <button onClick={onDelete} className="p-1 hover:bg-red-500/20 rounded text-white/60 hover:text-red-400 transition">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+          <div 
+            className="group cursor-pointer mt-2"
+            onClick={() => setIsModalOpen(true)}
+          >
+            <div className="text-white/70 text-sm line-clamp-2">
+              {content || <span className="text-white/30 italic">空内容...</span>}
+            </div>
+            <div className="mt-1.5 text-purple-400 text-xs font-medium flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+              <span>阅读全文</span>
+              <ChevronRight className="w-3 h-3" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {isModalOpen && (
+          <FullScreenTextModal 
+            title={`备用开场白 ${index + 1}`} 
+            content={content} 
+            onClose={() => setIsModalOpen(false)} 
+            onSave={onSave}
           />
         )}
       </AnimatePresence>
