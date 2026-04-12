@@ -124,6 +124,13 @@ export function CharacterDetail({ id, onBack }: Props) {
     const updatedChar = { ...character };
     let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
     targetData[field] = value;
+    
+    // For alternate greetings, also save to extensions for broader compatibility with some Tavern forks
+    if (field === 'alternate_greetings') {
+      targetData.extensions = targetData.extensions || {};
+      targetData.extensions.alternate_greetings = value;
+    }
+    
     const promise = saveCharacter(updatedChar);
     savePromiseRef.current = promise;
     await promise;
@@ -708,7 +715,7 @@ export function CharacterDetail({ id, onBack }: Props) {
                       <div className="flex gap-3 mt-4">
                         <button 
                           onClick={() => {
-                            const newBook = { name: '新世界书', description: '', entries: [] };
+                            const newBook = { name: '新世界书', description: '', entries: {} };
                             const updatedChar = { ...character };
                             let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
                             
@@ -735,11 +742,11 @@ export function CharacterDetail({ id, onBack }: Props) {
                                 const json = JSON.parse(text);
                                 
                                 // Handle both array format and object format (like the provided example)
-                                let entries = [];
+                                let entries: any = [];
                                 if (Array.isArray(json.entries)) {
                                   entries = json.entries;
                                 } else if (json.entries && typeof json.entries === 'object') {
-                                  entries = Object.values(json.entries);
+                                  entries = json.entries; // Keep as object!
                                 } else if (Array.isArray(json)) {
                                   entries = json;
                                 }
@@ -987,14 +994,35 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
 
   if (!book || !book.entries) return null;
   
-  const entries = book.entries || [];
+  // Always work with an array internally
+  const entries = Array.isArray(book.entries) ? book.entries : Object.values(book.entries);
+
+  // Helper to save entries in the format Tavern expects (object with string indices)
+  const saveEntries = (newEntriesArray: any[]) => {
+    const isOriginallyObject = !Array.isArray(book.entries);
+    if (isOriginallyObject) {
+      const entriesObj: Record<string, any> = {};
+      newEntriesArray.forEach((entry, idx) => {
+        entriesObj[String(idx)] = { ...entry, uid: entry.uid !== undefined ? entry.uid : idx };
+      });
+      onUpdate({ ...book, entries: entriesObj });
+    } else {
+      onUpdate({ ...book, entries: newEntriesArray });
+    }
+  };
 
   const handleEdit = (index: number) => {
     const entry = entries[index];
+    const keysArray = entry.key || entry.keys || [];
+    const keysStr = Array.isArray(keysArray) ? keysArray.join(', ') : keysArray;
+    const isEnabled = entry.disable !== undefined ? !entry.disable : entry.enabled !== false;
+    const order = entry.order !== undefined ? entry.order : (entry.insertion_order || 50);
+
     setEditForm({
       ...entry,
-      keys: Array.isArray(entry.keys) ? entry.keys.join(', ') : entry.keys,
-      enabled: entry.enabled !== false // default true
+      keys: keysStr,
+      enabled: isEnabled,
+      insertion_order: order
     });
     setEditingIndex(index);
   };
@@ -1012,12 +1040,18 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
 
   const handleSave = () => {
     const newEntries = [...entries];
+    const keysArray = typeof editForm.keys === 'string' 
+      ? editForm.keys.split(',').map((k: string) => k.trim()).filter(Boolean) 
+      : editForm.keys;
+    
     const formattedForm = {
       ...editForm,
-      keys: typeof editForm.keys === 'string' 
-        ? editForm.keys.split(',').map((k: string) => k.trim()).filter(Boolean) 
-        : editForm.keys,
-      insertion_order: parseInt(editForm.insertion_order) || 50
+      key: keysArray, // Tavern uses 'key'
+      keys: keysArray, // Keep 'keys' for compatibility
+      order: parseInt(editForm.insertion_order) || 50, // Tavern uses 'order'
+      insertion_order: parseInt(editForm.insertion_order) || 50,
+      disable: !editForm.enabled, // Tavern uses 'disable'
+      enabled: editForm.enabled
     };
 
     if (editingIndex === -1) {
@@ -1025,7 +1059,7 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
     } else if (editingIndex !== null) {
       newEntries[editingIndex] = formattedForm;
     }
-    onUpdate({ ...book, entries: newEntries });
+    saveEntries(newEntries);
     setEditingIndex(null);
   };
 
@@ -1033,14 +1067,21 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
     if (confirm('确定要删除这条世界书记录吗？')) {
       const newEntries = [...entries];
       newEntries.splice(index, 1);
-      onUpdate({ ...book, entries: newEntries });
+      saveEntries(newEntries);
     }
   };
 
   const handleToggleEnable = (index: number) => {
     const newEntries = [...entries];
-    newEntries[index] = { ...newEntries[index], enabled: newEntries[index].enabled === false ? true : false };
-    onUpdate({ ...book, entries: newEntries });
+    const entry = newEntries[index];
+    const currentEnabled = entry.disable !== undefined ? !entry.disable : entry.enabled !== false;
+    const newEnabled = !currentEnabled;
+    newEntries[index] = { 
+      ...entry, 
+      enabled: newEnabled,
+      disable: !newEnabled
+    };
+    saveEntries(newEntries);
   };
 
   if (editingIndex !== null) {
@@ -1161,9 +1202,11 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
           <p className="text-center text-white/40 py-8">暂无条目。</p>
         ) : (
           entries.map((entry: any, i: number) => {
-            const isEnabled = entry.enabled !== false;
-            const title = entry.comment || entry.name || (Array.isArray(entry.keys) ? entry.keys.join(', ') : entry.keys) || '无标题';
-            const keysDisplay = Array.isArray(entry.keys) ? entry.keys.join(', ') : entry.keys;
+            const isEnabled = entry.disable !== undefined ? !entry.disable : entry.enabled !== false;
+            const keysArray = entry.key || entry.keys || [];
+            const keysDisplay = Array.isArray(keysArray) ? keysArray.join(', ') : keysArray;
+            const title = entry.comment || entry.name || keysDisplay || '无标题';
+            const order = entry.order !== undefined ? entry.order : (entry.insertion_order || 50);
 
             return (
               <div key={i} className={`bg-white/5 p-3 rounded-xl border ${isEnabled ? 'border-white/10' : 'border-white/5 opacity-60'} flex gap-3 transition-opacity`}>
@@ -1187,7 +1230,7 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
                         {isEnabled ? '已启用' : '已禁用'}
                       </button>
                       <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded-full text-white/60 whitespace-nowrap">
-                        顺序: {entry.insertion_order || 50}
+                        顺序: {order}
                       </span>
                       <button onClick={() => handleEdit(i)} className="p-1 hover:bg-white/10 rounded text-white/60 hover:text-white transition">
                         <Edit2 className="w-3.5 h-3.5" />
@@ -1217,7 +1260,11 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
       <AnimatePresence>
         {viewingEntryIndex !== null && (
           <FullScreenTextModal 
-            title={Array.isArray(entries[viewingEntryIndex].keys) ? entries[viewingEntryIndex].keys.join(', ') : entries[viewingEntryIndex].keys || '无关键词'} 
+            title={(() => {
+              const entry = entries[viewingEntryIndex];
+              const keysArray = entry.key || entry.keys || [];
+              return Array.isArray(keysArray) ? keysArray.join(', ') : keysArray || '无关键词';
+            })()} 
             content={entries[viewingEntryIndex].content} 
             onClose={() => setViewingEntryIndex(null)} 
           />
