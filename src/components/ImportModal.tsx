@@ -1,9 +1,10 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, UploadCloud, FileJson, Image as ImageIcon, Folder, AlertCircle } from 'lucide-react';
+import { X, UploadCloud, FileJson, Image as ImageIcon, Folder, AlertCircle, FileArchive } from 'lucide-react';
 import { extractTavernData } from '../lib/png';
 import { saveCharacter, CharacterCard, getFolders, saveFolder, Folder as DBFolder } from '../lib/db';
 import { parseTavernCard } from '../types/tavern';
+import JSZip from 'jszip';
 
 interface Props {
   isOpen: boolean;
@@ -141,13 +142,41 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
   const handleFiles = async (files: FileList | File[]) => {
     setError(null);
     setImportErrors([]);
-    const fileArray = Array.from(files).filter(f => 
-      f.type === 'image/png' || f.name.endsWith('.png') || 
-      f.type === 'application/json' || f.name.endsWith('.json')
-    );
+    
+    let fileArray: File[] = [];
+    
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      if (f.name.endsWith('.zip')) {
+        try {
+          const zip = await JSZip.loadAsync(f);
+          for (const relativePath in zip.files) {
+            const zipEntry = zip.files[relativePath];
+            if (!zipEntry.dir && (relativePath.endsWith('.png') || relativePath.endsWith('.json'))) {
+              const blob = await zipEntry.async('blob');
+              const extractedFile = new File([blob], zipEntry.name.split('/').pop() || 'file', { 
+                type: relativePath.endsWith('.png') ? 'image/png' : 'application/json' 
+              });
+              // Mock webkitRelativePath to preserve folder structure from ZIP
+              Object.defineProperty(extractedFile, 'webkitRelativePath', {
+                value: relativePath,
+                writable: false
+              });
+              fileArray.push(extractedFile);
+            }
+          }
+        } catch (e) {
+          console.error("Failed to read zip", e);
+          setError(`ZIP 文件读取失败: ${f.name}`);
+          return;
+        }
+      } else if (f.type === 'image/png' || f.name.endsWith('.png') || f.type === 'application/json' || f.name.endsWith('.json')) {
+        fileArray.push(f);
+      }
+    }
 
     if (fileArray.length === 0) {
-      setError("未找到有效的 PNG 或 JSON 文件。");
+      setError("未找到有效的 PNG、JSON 或 ZIP 文件。");
       return;
     }
 
@@ -157,11 +186,67 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
     processChunk(fileArray, 0, 50, fileArray.length, 0, []);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFiles(e.dataTransfer.files);
+
+    if (!e.dataTransfer.items) {
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        handleFiles(e.dataTransfer.files);
+      }
+      return;
+    }
+
+    const allFiles: File[] = [];
+    
+    const readEntry = async (entry: any, path = '') => {
+      if (entry.isFile) {
+        const file = await new Promise<File>((resolve, reject) => entry.file(resolve, reject));
+        // Mock webkitRelativePath so processChunk can create folders
+        Object.defineProperty(file, 'webkitRelativePath', {
+          value: path + file.name,
+          writable: false
+        });
+        allFiles.push(file);
+      } else if (entry.isDirectory) {
+        const dirReader = entry.createReader();
+        const readAllEntries = async () => {
+          let entries: any[] = [];
+          let keepReading = true;
+          while (keepReading) {
+            const batch = await new Promise<any[]>((resolve, reject) => {
+              dirReader.readEntries(resolve, reject);
+            });
+            if (batch.length > 0) {
+              entries = entries.concat(batch);
+            } else {
+              keepReading = false;
+            }
+          }
+          return entries;
+        };
+        const entries = await readAllEntries();
+        for (const child of entries) {
+          await readEntry(child, path + entry.name + '/');
+        }
+      }
+    };
+
+    const promises = [];
+    for (let i = 0; i < e.dataTransfer.items.length; i++) {
+      const item = e.dataTransfer.items[i];
+      if (item.kind === 'file') {
+        const entry = item.webkitGetAsEntry();
+        if (entry) {
+          promises.push(readEntry(entry, ''));
+        }
+      }
+    }
+
+    await Promise.all(promises);
+
+    if (allFiles.length > 0) {
+      handleFiles(allFiles);
     }
   };
 
@@ -253,22 +338,26 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
                 >
                   <UploadCloud className={`w-12 h-12 mb-4 ${isDragging ? 'text-purple-400' : 'text-slate-400'}`} />
                   <p className="text-center font-medium mb-1">点击上传或拖拽文件到此处</p>
-                  <p className="text-center text-sm text-slate-400">支持多个 PNG/JSON 格式的酒馆卡或预设</p>
+                  <p className="text-center text-sm text-slate-400">支持多个 PNG/JSON 格式，或包含文件夹结构的 ZIP 压缩包</p>
                   
                   <div className="flex gap-4 mt-6 text-slate-500">
                     <div className="flex items-center gap-1 text-xs"><ImageIcon className="w-4 h-4" /> PNG</div>
                     <div className="flex items-center gap-1 text-xs"><FileJson className="w-4 h-4" /> JSON</div>
+                    <div className="flex items-center gap-1 text-xs"><FileArchive className="w-4 h-4" /> ZIP</div>
                   </div>
                 </div>
 
-                <div className="mt-4 flex justify-center">
+                <div className="mt-4 flex flex-col items-center gap-2">
                   <button 
                     onClick={() => folderInputRef.current?.click()}
                     className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 rounded-xl transition text-sm text-slate-300"
                   >
                     <Folder className="w-4 h-4" />
-                    导入文件夹
+                    选择单个文件夹
                   </button>
+                  <p className="text-xs text-slate-500 text-center">
+                    提示：如需导入多个文件夹，请直接将它们拖拽到上方区域
+                  </p>
                 </div>
 
                 {error && (
@@ -287,7 +376,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
               type="file"
               ref={fileInputRef}
               onChange={(e) => e.target.files && handleFiles(e.target.files)}
-              accept=".png,.json,image/png,application/json"
+              accept=".png,.json,.zip,image/png,application/json,application/zip,application/x-zip-compressed"
               className="hidden"
               multiple
             />
