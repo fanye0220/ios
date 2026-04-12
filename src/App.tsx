@@ -11,6 +11,9 @@ import { ImportModal } from './components/ImportModal';
 import { FolderSidebar } from './components/FolderSidebar';
 import { TrashBin } from './components/TrashBin';
 import { DuplicateDetector } from './components/DuplicateDetector';
+import { AutoTagger } from './components/AutoTagger';
+import { AIRecommender } from './components/AIRecommender';
+import { SettingsModal } from './components/SettingsModal';
 import { migrateDatabase } from './lib/db';
 
 export default function App() {
@@ -18,6 +21,7 @@ export default function App() {
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   
   const [isMigrating, setIsMigrating] = useState(true);
@@ -71,6 +75,7 @@ export default function App() {
               selectedFolderId={selectedFolderId}
               onSelectFolder={setSelectedFolderId}
               onClose={() => setIsSidebarOpen(false)}
+              onOpenSettings={() => setIsSettingsOpen(true)}
             />
           </>
         )}
@@ -84,6 +89,14 @@ export default function App() {
           <DuplicateDetector 
             onClose={() => { setSelectedFolderId(null); setRefreshKey(prev => prev + 1); }} 
             onSelectChar={setSelectedCharId}
+          />
+        ) : selectedFolderId === 'autotagger' ? (
+          <AutoTagger onClose={() => { setSelectedFolderId(null); setRefreshKey(prev => prev + 1); }} onOpenSettings={() => setIsSettingsOpen(true)} />
+        ) : selectedFolderId === 'recommender' ? (
+          <AIRecommender 
+            onClose={() => { setSelectedFolderId(null); setRefreshKey(prev => prev + 1); }} 
+            onSelectChar={(id) => { setSelectedFolderId(null); setSelectedCharId(id); }}
+            onOpenSettings={() => setIsSettingsOpen(true)} 
           />
         ) : (
           <CharacterList
@@ -115,6 +128,11 @@ export default function App() {
         onClose={() => setIsImportModalOpen(false)}
         onImported={() => setRefreshKey(prev => prev + 1)}
         folderId={selectedFolderId}
+      />
+
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
       />
     </div>
   );

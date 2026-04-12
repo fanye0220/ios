@@ -377,7 +377,19 @@ export async function restoreCharacter(id: string): Promise<void> {
 export async function getTrashedCharacters(): Promise<CharacterCard[]> {
   const db = await initDB();
   const allCharacters = await db.getAll('characters');
-  return allCharacters.filter(c => c.deletedAt).sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+  const trashed = allCharacters.filter(c => c.deletedAt).sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+  
+  for (const char of trashed) {
+    if (char.hasBlobsSeparated) {
+      const blobs = await db.get('blobs', char.id);
+      if (blobs) {
+        char.avatarBlob = blobs.avatarBlob;
+        char.originalFile = blobs.originalFile;
+        char.avatarHistory = blobs.avatarHistory;
+      }
+    }
+  }
+  return trashed;
 }
 
 export async function emptyTrash(): Promise<void> {
@@ -415,10 +427,14 @@ export async function cleanupOldTrash(): Promise<void> {
   await tx.done;
 }
 
+export interface DuplicateCharacter {
+  char: CharacterCard;
+  reason: string;
+}
+
 export interface DuplicateGroup {
   id: string;
-  characters: CharacterCard[];
-  reason: string;
+  characters: DuplicateCharacter[];
 }
 
 export async function findDuplicates(): Promise<DuplicateGroup[]> {
@@ -426,7 +442,7 @@ export async function findDuplicates(): Promise<DuplicateGroup[]> {
   const allCharacters = await db.getAll('characters');
   const activeCharacters = allCharacters.filter(c => !c.deletedAt);
   
-  const groups: DuplicateGroup[] = [];
+  const groups: CharacterCard[][] = [];
   const processedIds = new Set<string>();
   
   for (let i = 0; i < activeCharacters.length; i++) {
@@ -434,46 +450,144 @@ export async function findDuplicates(): Promise<DuplicateGroup[]> {
     if (processedIds.has(charA.id)) continue;
     
     const duplicates: CharacterCard[] = [charA];
-    let duplicateReason = '';
     
-    const aData = charA.data || {};
-    const aFirstMes = aData.first_mes || aData.data?.first_mes;
-    const aDesc = aData.description || aData.data?.description;
-    const aScenario = aData.scenario || aData.data?.scenario;
+    const aData = charA.data?.data || charA.data || {};
+    const aFirstMes = aData.first_mes || '';
+    const aDesc = aData.description || '';
+    const aName = (charA.name || aData.name || '').trim().toLowerCase();
 
     for (let j = i + 1; j < activeCharacters.length; j++) {
       const charB = activeCharacters[j];
       if (processedIds.has(charB.id)) continue;
       
-      const bData = charB.data || {};
-      const bFirstMes = bData.first_mes || bData.data?.first_mes;
-      const bDesc = bData.description || bData.data?.description;
-      const bScenario = bData.scenario || bData.data?.scenario;
+      const bData = charB.data?.data || charB.data || {};
+      const bFirstMes = bData.first_mes || '';
+      const bDesc = bData.description || '';
+      const bName = (charB.name || bData.name || '').trim().toLowerCase();
       
-      if (aFirstMes && bFirstMes && aFirstMes === bFirstMes && aFirstMes.length > 20) {
+      let isDup = false;
+      
+      if (aName && bName && aName === bName) {
+        // Same name, check if they share content
+        if (aDesc === bDesc || aFirstMes === bFirstMes) {
+          isDup = true;
+        } else if (aDesc.length > 50 && bDesc.length > 50 && (aDesc.includes(bDesc.slice(0, 50)) || bDesc.includes(aDesc.slice(0, 50)))) {
+          isDup = true;
+        } else if (aFirstMes.length > 50 && bFirstMes.length > 50 && (aFirstMes.includes(bFirstMes.slice(0, 50)) || bFirstMes.includes(aFirstMes.slice(0, 50)))) {
+          isDup = true;
+        } else if (aDesc.length < 50 && bDesc.length < 50) {
+          isDup = true;
+        }
+      } else {
+        if (aDesc && bDesc && aDesc === bDesc && aDesc.length > 50) isDup = true;
+        else if (aFirstMes && bFirstMes && aFirstMes === bFirstMes && aFirstMes.length > 50) isDup = true;
+      }
+      
+      if (isDup) {
         duplicates.push(charB);
         processedIds.add(charB.id);
-        duplicateReason = '开场白相同';
-      } else if (aDesc && bDesc && aDesc === bDesc && aDesc.length > 50) {
-        duplicates.push(charB);
-        processedIds.add(charB.id);
-        duplicateReason = '设定(Description)相同';
-      } else if (aScenario && bScenario && aScenario === bScenario && aScenario.length > 20) {
-        duplicates.push(charB);
-        processedIds.add(charB.id);
-        duplicateReason = '世界书/场景(Scenario)相同';
       }
     }
     
     if (duplicates.length > 1) {
       processedIds.add(charA.id);
-      groups.push({
-        id: crypto.randomUUID(),
-        characters: duplicates,
-        reason: duplicateReason
-      });
+      groups.push(duplicates);
     }
   }
   
-  return groups;
+  const finalGroups: DuplicateGroup[] = [];
+  
+  for (const groupChars of groups) {
+    // Load blobs
+    for (const char of groupChars) {
+      if (char.hasBlobsSeparated) {
+        const blobs = await db.get('blobs', char.id);
+        if (blobs) {
+          char.avatarBlob = blobs.avatarBlob;
+          char.originalFile = blobs.originalFile;
+          char.avatarHistory = blobs.avatarHistory;
+        }
+      }
+    }
+    
+    // Sort by createdAt ascending
+    const sorted = [...groupChars].sort((a, b) => a.createdAt - b.createdAt);
+    const analyzedChars: DuplicateCharacter[] = [];
+    
+    for (let i = 0; i < sorted.length; i++) {
+      const current = sorted[i];
+      const cData = current.data?.data || current.data || {};
+      
+      if (i === 0) {
+        analyzedChars.push({ char: current, reason: '最早导入的版本' });
+        continue;
+      }
+      
+      const oldest = sorted[0];
+      const oData = oldest.data?.data || oldest.data || {};
+      
+      const cDesc = cData.description || '';
+      const oDesc = oData.description || '';
+      const cFirst = cData.first_mes || '';
+      const oFirst = oData.first_mes || '';
+      const cMesExample = cData.mes_example || '';
+      const oMesExample = oData.mes_example || '';
+      
+      const cBook = cData.character_book?.entries?.length || cData.extensions?.character_book?.entries?.length || 0;
+      const oBook = oData.character_book?.entries?.length || oData.extensions?.character_book?.entries?.length || 0;
+      
+      const cAlt = cData.alternate_greetings?.length || cData.extensions?.alternate_greetings?.length || 0;
+      const oAlt = oData.alternate_greetings?.length || oData.extensions?.alternate_greetings?.length || 0;
+      
+      const reasons: string[] = [];
+      
+      if (cDesc === oDesc && cFirst === oFirst && cBook === oBook && cAlt === oAlt && cMesExample === oMesExample) {
+        let isIdenticalToPrev = false;
+        for (let j = 0; j < i; j++) {
+          const pData = sorted[j].data?.data || sorted[j].data || {};
+          if (cDesc === (pData.description || '') && cFirst === (pData.first_mes || '')) {
+            isIdenticalToPrev = true;
+            break;
+          }
+        }
+        if (isIdenticalToPrev) {
+          reasons.push('内容完全相同');
+        } else {
+          reasons.push('内容基本相同');
+        }
+      } else {
+        if (cFirst !== oFirst) {
+          if (cFirst.length > oFirst.length + 20) reasons.push('开场白更长');
+          else if (cFirst.length < oFirst.length - 20) reasons.push('开场白较短');
+          else reasons.push('开场白有修改');
+        }
+        if (cDesc !== oDesc) {
+          if (cDesc.length > oDesc.length + 50) reasons.push('设定更丰富');
+          else if (cDesc.length < oDesc.length - 50) reasons.push('设定较少');
+          else reasons.push('设定有修改');
+        }
+        if (cBook > oBook) reasons.push(`世界书更多(+${cBook - oBook})`);
+        else if (cBook < oBook) reasons.push(`世界书较少`);
+        
+        if (cAlt > oAlt) reasons.push(`备用开场白更多(+${cAlt - oAlt})`);
+        
+        if (cMesExample !== oMesExample) {
+           if (cMesExample.length > oMesExample.length + 50) reasons.push('对话示例更多');
+        }
+      }
+      
+      if (reasons.length === 0) {
+        reasons.push('细节有微调');
+      }
+      
+      analyzedChars.push({ char: current, reason: reasons.join('，') });
+    }
+    
+    finalGroups.push({
+      id: crypto.randomUUID(),
+      characters: analyzedChars
+    });
+  }
+  
+  return finalGroups;
 }

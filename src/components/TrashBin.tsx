@@ -59,6 +59,8 @@ const TrashedCharacterCard = ({ char, onRestore, onHardDelete }: { key?: React.K
 export function TrashBin({ onClose }: Props) {
   const [trashedCharacters, setTrashedCharacters] = useState<CharacterCard[]>([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
 
   const loadTrash = async () => {
     setLoading(true);
@@ -90,6 +92,9 @@ export function TrashBin({ onClose }: Props) {
       loadTrash();
     }
   };
+
+  const totalPages = Math.ceil(trashedCharacters.length / pageSize);
+  const paginatedChars = trashedCharacters.slice((page - 1) * pageSize, page * pageSize);
 
   return (
     <motion.div
@@ -136,15 +141,39 @@ export function TrashBin({ onClose }: Props) {
               <p>回收站是空的</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {trashedCharacters.map(char => (
-                <TrashedCharacterCard 
-                  key={char.id} 
-                  char={char} 
-                  onRestore={handleRestore} 
-                  onHardDelete={handleHardDelete} 
-                />
-              ))}
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {paginatedChars.map(char => (
+                  <TrashedCharacterCard 
+                    key={char.id} 
+                    char={char} 
+                    onRestore={handleRestore} 
+                    onHardDelete={handleHardDelete} 
+                  />
+                ))}
+              </div>
+              
+              {totalPages > 1 && (
+                <div className="flex items-center justify-center gap-2 pt-4 border-t border-white/10">
+                  <button 
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                    className="px-3 py-1.5 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:hover:bg-white/5 rounded-lg text-sm transition"
+                  >
+                    上一页
+                  </button>
+                  <span className="text-sm text-white/60">
+                    {page} / {totalPages}
+                  </span>
+                  <button 
+                    onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                    disabled={page === totalPages}
+                    className="px-3 py-1.5 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:hover:bg-white/5 rounded-lg text-sm transition"
+                  >
+                    下一页
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

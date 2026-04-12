@@ -1,15 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Folder as FolderIcon, Plus, MoreVertical, Edit2, Trash2, Home, X, Check, Copy, Trash, ChevronRight } from 'lucide-react';
+import { Folder as FolderIcon, Plus, MoreVertical, Edit2, Trash2, Home, X, Check, Copy, Trash, ChevronRight, Tag, Settings, Sparkles } from 'lucide-react';
 import { Folder, getFolders, saveFolder, deleteFolder } from '../lib/db';
 
 interface Props {
   selectedFolderId: string | null;
   onSelectFolder: (id: string | null) => void;
   onClose: () => void;
+  onOpenSettings: () => void;
 }
 
-export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose }: Props) {
+export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose, onOpenSettings }: Props) {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [isEditing, setIsEditing] = useState(false);
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
@@ -260,6 +261,26 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose }: Pro
           <div className="space-y-1">
             <button
               onClick={() => {
+                onSelectFolder('autotagger');
+                onClose();
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition ${selectedFolderId === 'autotagger' ? 'bg-blue-500/20 text-blue-400 font-medium' : 'text-white/70 hover:bg-white/5 hover:text-white'}`}
+            >
+              <Tag className="w-5 h-5" />
+              <span>自动打标</span>
+            </button>
+            <button
+              onClick={() => {
+                onSelectFolder('recommender');
+                onClose();
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition ${selectedFolderId === 'recommender' ? 'bg-emerald-500/20 text-emerald-400 font-medium' : 'text-white/70 hover:bg-white/5 hover:text-white'}`}
+            >
+              <Sparkles className="w-5 h-5" />
+              <span>AI 智能推荐</span>
+            </button>
+            <button
+              onClick={() => {
                 onSelectFolder('duplicates');
                 onClose();
               }}
@@ -277,6 +298,16 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose }: Pro
             >
               <Trash className="w-5 h-5" />
               <span>回收站</span>
+            </button>
+            <button
+              onClick={() => {
+                onOpenSettings();
+                onClose();
+              }}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition text-white/70 hover:bg-white/5 hover:text-white"
+            >
+              <Settings className="w-5 h-5" />
+              <span>API 设置</span>
             </button>
           </div>
         </div>
