@@ -310,28 +310,38 @@ export async function getCharacter(id: string): Promise<CharacterCard | undefine
 }
 
 export async function saveCharacter(character: CharacterCard): Promise<void> {
+  return saveCharacters([character]);
+}
+
+export async function saveCharacters(characters: CharacterCard[]): Promise<void> {
+  if (characters.length === 0) return;
   const db = await initDB();
   const tx = db.transaction(['characters', 'blobs'], 'readwrite');
+  const charStore = tx.objectStore('characters');
+  const blobStore = tx.objectStore('blobs');
   
-  const existing = await tx.objectStore('characters').get(character.id);
-  if (existing) {
-    character.updatedAt = Date.now();
+  for (const character of characters) {
+    const existing = await charStore.get(character.id);
+    if (existing) {
+      character.updatedAt = Date.now();
+    }
+    
+    const blobs = {
+      avatarBlob: character.avatarBlob,
+      originalFile: character.originalFile,
+      avatarHistory: character.avatarHistory
+    };
+    
+    await blobStore.put(blobs, character.id);
+    
+    const charToSave = { ...character, hasBlobsSeparated: true };
+    delete charToSave.avatarBlob;
+    delete charToSave.originalFile;
+    delete charToSave.avatarHistory;
+    
+    await charStore.put(charToSave);
   }
   
-  const blobs = {
-    avatarBlob: character.avatarBlob,
-    originalFile: character.originalFile,
-    avatarHistory: character.avatarHistory
-  };
-  
-  await tx.objectStore('blobs').put(blobs, character.id);
-  
-  const charToSave = { ...character, hasBlobsSeparated: true };
-  delete charToSave.avatarBlob;
-  delete charToSave.originalFile;
-  delete charToSave.avatarHistory;
-  
-  await tx.objectStore('characters').put(charToSave);
   await tx.done;
 }
 

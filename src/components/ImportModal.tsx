@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, UploadCloud, FileJson, Image as ImageIcon, Folder, AlertCircle, FileArchive } from 'lucide-react';
 import { extractTavernData } from '../lib/png';
-import { saveCharacter, CharacterCard, getFolders, saveFolder, Folder as DBFolder } from '../lib/db';
+import { saveCharacter, saveCharacters, CharacterCard, getFolders, saveFolder, Folder as DBFolder } from '../lib/db';
 import { parseTavernCard } from '../types/tavern';
 import JSZip from 'jszip';
 
@@ -48,6 +48,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
 
   const processChunk = async (files: File[], startIndex: number, chunkSize: number, total: number, successCount: number, errors: {file: string, error: string}[]) => {
     const endIndex = Math.min(startIndex + chunkSize, total);
+    const charsToSave: CharacterCard[] = [];
     
     for (let i = startIndex; i < endIndex; i++) {
       const file = files[i];
@@ -68,7 +69,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
 
         if (file.type === 'image/png' || file.name.endsWith('.png')) {
           const buffer = await file.arrayBuffer();
-          data = extractTavernData(buffer);
+          data = await extractTavernData(buffer);
           if (!data) {
             throw new Error("非酒馆卡或预设格式：未找到Tavern角色数据。");
           }
@@ -110,13 +111,17 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           folderId: targetFolderId,
         };
 
-        await saveCharacter(newChar);
+        charsToSave.push(newChar);
         successCount++;
       } catch (err: any) {
         console.error(`Failed to import ${file.name}:`, err);
         errors.push({ file: file.name, error: err.message || '未知错误' });
       }
       setProgress({ current: i + 1, total });
+    }
+
+    if (charsToSave.length > 0) {
+      await saveCharacters(charsToSave);
     }
 
     if (endIndex < total) {
