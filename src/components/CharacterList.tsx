@@ -151,13 +151,45 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
     setSelectedIds(newSet);
   };
 
-  const handleSelectAll = () => {
-    const totalItems = characters.length + (folderId === null && !searchQuery && selectedTags.length === 0 ? folders.length : 0);
+  const handleSelectPage = () => {
+    const pageItems = characters.length + (folderId === null && !searchQuery && selectedTags.length === 0 ? folders.length : 0);
+    
+    let allPageSelected = true;
+    for (const c of characters) {
+      if (!selectedIds.has(c.id)) allPageSelected = false;
+    }
+    if (folderId === null && !searchQuery && selectedTags.length === 0) {
+      for (const f of folders) {
+        if (!selectedIds.has(f.id)) allPageSelected = false;
+      }
+    }
+
+    if (allPageSelected) {
+      const newSet = new Set(selectedIds);
+      characters.forEach(c => newSet.delete(c.id));
+      if (folderId === null && !searchQuery && selectedTags.length === 0) {
+        folders.forEach(f => newSet.delete(f.id));
+      }
+      setSelectedIds(newSet);
+    } else {
+      const newSet = new Set(selectedIds);
+      characters.forEach(c => newSet.add(c.id));
+      if (folderId === null && !searchQuery && selectedTags.length === 0) {
+        folders.forEach(f => newSet.add(f.id));
+      }
+      setSelectedIds(newSet);
+    }
+  };
+
+  const handleSelectAll = async () => {
+    const { characters: allChars } = await getCharacters(1, 100000, folderId, searchQuery, selectedTags, sortBy);
+    const totalItems = allChars.length + (folderId === null && !searchQuery && selectedTags.length === 0 ? folders.length : 0);
+    
     if (selectedIds.size === totalItems) {
       setSelectedIds(new Set());
     } else {
       const newSet = new Set<string>();
-      characters.forEach(c => newSet.add(c.id));
+      allChars.forEach(c => newSet.add(c.id));
       if (folderId === null && !searchQuery && selectedTags.length === 0) {
         folders.forEach(f => newSet.add(f.id));
       }
@@ -313,8 +345,11 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
             </button>
             <span className="font-bold text-lg flex-1 text-center">已选择 {selectedIds.size} 项</span>
             <div className="flex items-center gap-2">
-              <button onClick={handleSelectAll} className="text-purple-400 font-medium px-3 py-1.5 hover:bg-purple-400/10 rounded-lg transition">
-                {selectedIds.size === characters.length ? '取消全选' : '全选'}
+              <button onClick={handleSelectPage} className="text-purple-400 font-medium px-3 py-1.5 hover:bg-purple-400/10 rounded-lg transition text-sm whitespace-nowrap">
+                全选本页
+              </button>
+              <button onClick={handleSelectAll} className="text-pink-400 font-medium px-3 py-1.5 hover:bg-pink-400/10 rounded-lg transition text-sm whitespace-nowrap">
+                全选所有
               </button>
             </div>
           </motion.div>

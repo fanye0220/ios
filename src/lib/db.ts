@@ -126,7 +126,7 @@ export async function getCharacters(
   if (searchQuery) {
     const query = searchQuery.toLowerCase();
     allCharacters = allCharacters.filter(c => {
-      const charTags = c.data?.tags || c.data?.data?.tags;
+      const charTags = c.data?.data?.tags || c.data?.tags;
       return c.name.toLowerCase().includes(query) || 
         (charTags && charTags.some((t: string) => t.toLowerCase().includes(query)));
     });
@@ -134,7 +134,7 @@ export async function getCharacters(
 
   if (tags.length > 0) {
     allCharacters = allCharacters.filter(c => {
-      const charTags = c.data?.tags || c.data?.data?.tags;
+      const charTags = c.data?.data?.tags || c.data?.tags;
       return charTags && tags.every(t => charTags.includes(t));
     });
   }
@@ -160,7 +160,7 @@ export async function getAllTags(): Promise<string[]> {
   const tags = new Set<string>();
   characters.forEach(c => {
     if (c.deletedAt) return;
-    const charTags = c.data?.tags || c.data?.data?.tags;
+    const charTags = c.data?.data?.tags || c.data?.tags;
     if (charTags && Array.isArray(charTags)) {
       charTags.forEach((t: string) => tags.add(t));
     }
@@ -175,7 +175,7 @@ export async function renameTag(oldTag: string, newTag: string): Promise<void> {
   const characters = await store.getAll();
   
   for (const char of characters) {
-    const charTags = char.data?.tags || char.data?.data?.tags;
+    const charTags = char.data?.data?.tags || char.data?.tags;
     if (charTags && Array.isArray(charTags) && charTags.includes(oldTag)) {
       const newTags = charTags.map((t: string) => t === oldTag ? newTag : t);
       if (char.data?.data) {
@@ -196,7 +196,7 @@ export async function deleteTag(tagToDelete: string): Promise<void> {
   const characters = await store.getAll();
   
   for (const char of characters) {
-    const charTags = char.data?.tags || char.data?.data?.tags;
+    const charTags = char.data?.data?.tags || char.data?.tags;
     if (charTags && Array.isArray(charTags) && charTags.includes(tagToDelete)) {
       const newTags = charTags.filter((t: string) => t !== tagToDelete);
       if (char.data?.data) {
