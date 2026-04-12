@@ -12,13 +12,14 @@ export interface CharacterCard {
   name: string;
   avatarBlob?: Blob;
   avatarUrlFallback?: string;
-  avatarHistory?: Blob[]; // Store historical avatars
-  data: any; // The parsed JSON data
-  originalFile?: File; // The original PNG file if available
+  avatarHistory?: Blob[];
+  data: any;
+  originalFile?: File;
   createdAt: number;
   updatedAt?: number;
   deletedAt?: number;
   folderId?: string;
+  hasBlobsSeparated?: boolean;
 }
 
 interface TavernDB extends DBSchema {
@@ -32,13 +33,17 @@ interface TavernDB extends DBSchema {
     value: Folder;
     indexes: { 'by-date': number };
   };
+  blobs: {
+    key: string;
+    value: { avatarBlob?: Blob; originalFile?: File; avatarHistory?: Blob[] };
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<TavernDB>>;
 
 export function initDB() {
   if (!dbPromise) {
-    dbPromise = openDB<TavernDB>('tavern-manager-v2', 2, {
+    dbPromise = openDB<TavernDB>('tavern-manager-v2', 3, {
       upgrade(db, oldVersion, newVersion, transaction) {
         if (oldVersion < 1) {
           const store = db.createObjectStore('characters', { keyPath: 'id' });
@@ -51,10 +56,53 @@ export function initDB() {
           const folderStore = db.createObjectStore('folders', { keyPath: 'id' });
           folderStore.createIndex('by-date', 'createdAt');
         }
+        if (oldVersion < 3) {
+          db.createObjectStore('blobs');
+        }
       },
     });
   }
   return dbPromise;
+}
+
+export async function migrateDatabase(onProgress?: (current: number, total: number) => void) {
+  const db = await initDB();
+  
+  const tx = db.transaction('characters', 'readonly');
+  const allChars = await tx.objectStore('characters').getAll();
+  const unmigrated = allChars.filter(c => !c.hasBlobsSeparated);
+  
+  if (unmigrated.length === 0) return;
+
+  const CHUNK_SIZE = 50;
+  for (let i = 0; i < unmigrated.length; i += CHUNK_SIZE) {
+    const chunk = unmigrated.slice(i, i + CHUNK_SIZE);
+    const writeTx = db.transaction(['characters', 'blobs'], 'readwrite');
+    const charStore = writeTx.objectStore('characters');
+    const blobStore = writeTx.objectStore('blobs');
+    
+    for (const char of chunk) {
+      if (char.avatarBlob || char.originalFile || char.avatarHistory) {
+        await blobStore.put({
+          avatarBlob: char.avatarBlob,
+          originalFile: char.originalFile,
+          avatarHistory: char.avatarHistory
+        }, char.id);
+      }
+      
+      delete char.avatarBlob;
+      delete char.originalFile;
+      delete char.avatarHistory;
+      char.hasBlobsSeparated = true;
+      
+      await charStore.put(char);
+    }
+    await writeTx.done;
+    
+    if (onProgress) {
+      onProgress(Math.min(i + CHUNK_SIZE, unmigrated.length), unmigrated.length);
+    }
+  }
 }
 
 export async function getFolders(): Promise<Folder[]> {
@@ -118,7 +166,14 @@ export async function getCharacters(
   const tx = db.transaction('characters', 'readonly');
   const store = tx.store;
   
-  let allCharacters = await store.getAll();
+  let allCharacters: CharacterCard[] = [];
+
+  if (folderId && folderId !== 'all') {
+    const index = store.index('by-folder');
+    allCharacters = await index.getAll(folderId);
+  } else {
+    allCharacters = await store.getAll();
+  }
   
   // Filter out soft-deleted characters
   allCharacters = allCharacters.filter(c => !c.deletedAt);
@@ -168,6 +223,18 @@ export async function getCharacters(
   
   const total = allCharacters.length;
   const characters = allCharacters.slice((page - 1) * pageSize, page * pageSize);
+  
+  // Load blobs only for the paginated characters
+  for (const char of characters) {
+    if (char.hasBlobsSeparated) {
+      const blobs = await db.get('blobs', char.id);
+      if (blobs) {
+        char.avatarBlob = blobs.avatarBlob;
+        char.originalFile = blobs.originalFile;
+        char.avatarHistory = blobs.avatarHistory;
+      }
+    }
+  }
   
   return { characters, total };
 }
@@ -230,16 +297,42 @@ export async function deleteTag(tagToDelete: string): Promise<void> {
 
 export async function getCharacter(id: string): Promise<CharacterCard | undefined> {
   const db = await initDB();
-  return db.get('characters', id);
+  const char = await db.get('characters', id);
+  if (char && char.hasBlobsSeparated) {
+    const blobs = await db.get('blobs', id);
+    if (blobs) {
+      char.avatarBlob = blobs.avatarBlob;
+      char.originalFile = blobs.originalFile;
+      char.avatarHistory = blobs.avatarHistory;
+    }
+  }
+  return char;
 }
 
 export async function saveCharacter(character: CharacterCard): Promise<void> {
   const db = await initDB();
-  const existing = await db.get('characters', character.id);
+  const tx = db.transaction(['characters', 'blobs'], 'readwrite');
+  
+  const existing = await tx.objectStore('characters').get(character.id);
   if (existing) {
     character.updatedAt = Date.now();
   }
-  await db.put('characters', character);
+  
+  const blobs = {
+    avatarBlob: character.avatarBlob,
+    originalFile: character.originalFile,
+    avatarHistory: character.avatarHistory
+  };
+  
+  await tx.objectStore('blobs').put(blobs, character.id);
+  
+  const charToSave = { ...character, hasBlobsSeparated: true };
+  delete charToSave.avatarBlob;
+  delete charToSave.originalFile;
+  delete charToSave.avatarHistory;
+  
+  await tx.objectStore('characters').put(charToSave);
+  await tx.done;
 }
 
 export async function deleteCharacter(id: string): Promise<void> {
@@ -248,7 +341,10 @@ export async function deleteCharacter(id: string): Promise<void> {
   if (char) {
     if (char.deletedAt) {
       // Hard delete if already in trash
-      await db.delete('characters', id);
+      const tx = db.transaction(['characters', 'blobs'], 'readwrite');
+      await tx.objectStore('characters').delete(id);
+      await tx.objectStore('blobs').delete(id);
+      await tx.done;
     } else {
       // Soft delete
       char.deletedAt = Date.now();
@@ -274,13 +370,15 @@ export async function getTrashedCharacters(): Promise<CharacterCard[]> {
 
 export async function emptyTrash(): Promise<void> {
   const db = await initDB();
-  const tx = db.transaction('characters', 'readwrite');
-  const store = tx.store;
+  const tx = db.transaction(['characters', 'blobs'], 'readwrite');
+  const store = tx.objectStore('characters');
+  const blobStore = tx.objectStore('blobs');
   const allCharacters = await store.getAll();
   
   for (const char of allCharacters) {
     if (char.deletedAt) {
       await store.delete(char.id);
+      await blobStore.delete(char.id);
     }
   }
   await tx.done;
@@ -288,8 +386,9 @@ export async function emptyTrash(): Promise<void> {
 
 export async function cleanupOldTrash(): Promise<void> {
   const db = await initDB();
-  const tx = db.transaction('characters', 'readwrite');
-  const store = tx.store;
+  const tx = db.transaction(['characters', 'blobs'], 'readwrite');
+  const store = tx.objectStore('characters');
+  const blobStore = tx.objectStore('blobs');
   const allCharacters = await store.getAll();
   
   const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -298,6 +397,7 @@ export async function cleanupOldTrash(): Promise<void> {
   for (const char of allCharacters) {
     if (char.deletedAt && (now - char.deletedAt > SEVEN_DAYS_MS)) {
       await store.delete(char.id);
+      await blobStore.delete(char.id);
     }
   }
   await tx.done;

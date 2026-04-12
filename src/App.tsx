@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CharacterList } from './components/CharacterList';
 import { CharacterDetail } from './components/CharacterDetail';
@@ -11,6 +11,7 @@ import { ImportModal } from './components/ImportModal';
 import { FolderSidebar } from './components/FolderSidebar';
 import { TrashBin } from './components/TrashBin';
 import { DuplicateDetector } from './components/DuplicateDetector';
+import { migrateDatabase } from './lib/db';
 
 export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -18,6 +19,38 @@ export default function App() {
   const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  
+  const [isMigrating, setIsMigrating] = useState(true);
+  const [migrationProgress, setMigrationProgress] = useState({ current: 0, total: 0 });
+
+  useEffect(() => {
+    migrateDatabase((current, total) => {
+      setMigrationProgress({ current, total });
+    }).then(() => {
+      setIsMigrating(false);
+    });
+  }, []);
+
+  if (isMigrating && migrationProgress.total > 0) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-6">
+        <div className="w-16 h-16 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-6" />
+        <h2 className="text-2xl font-bold mb-2">正在优化数据库...</h2>
+        <p className="text-slate-400 mb-6 text-center max-w-md">
+          检测到您有大量角色卡，系统正在进行底层存储优化以提升加载速度。这可能需要几分钟时间，请勿关闭页面。
+        </p>
+        <p className="font-mono text-purple-400 font-bold text-lg mb-2">
+          {migrationProgress.current} / {migrationProgress.total}
+        </p>
+        <div className="w-full max-w-md bg-white/10 rounded-full h-3 overflow-hidden">
+          <div 
+            className="bg-gradient-to-r from-purple-500 to-pink-500 h-full transition-all duration-300"
+            style={{ width: `${(migrationProgress.current / migrationProgress.total) * 100}%` }}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="font-sans antialiased text-white bg-slate-900 h-screen flex overflow-hidden relative">
