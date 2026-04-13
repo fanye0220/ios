@@ -76,6 +76,15 @@ class TaggerState {
     this.notify();
   }
 
+  dismiss() {
+    this.stopRequested = true;
+    this.isTagging = false;
+    this.isPaused = false;
+    this.logs = [];
+    this.progress = { current: 0, total: 0, success: 0, failed: 0 };
+    this.notify();
+  }
+
   async startTagging() {
     if (this.untaggedCharacters.length === 0 || this.isTagging) return;
     

@@ -923,7 +923,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
             onClick={scrollToTop}
-            className="fixed bottom-28 right-8 w-12 h-12 bg-slate-800/80 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center shadow-xl text-white/80 hover:text-white hover:bg-slate-700/80 transition z-40"
+            className="fixed bottom-36 right-8 w-12 h-12 bg-slate-800/80 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center shadow-xl text-white/80 hover:text-white hover:bg-slate-700/80 transition z-40"
           >
             <ChevronLeft className="w-6 h-6 rotate-90" />
           </motion.button>
@@ -940,7 +940,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
             onClick={onImport}
-            className="fixed bottom-8 right-8 w-14 h-14 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center shadow-xl shadow-purple-500/30 text-white z-40"
+            className="fixed bottom-20 right-8 w-14 h-14 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center shadow-xl shadow-purple-500/30 text-white z-40"
           >
             <Plus className="w-6 h-6" />
           </motion.button>

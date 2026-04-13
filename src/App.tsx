@@ -79,6 +79,15 @@ function TaggerWidget({ onClick }: { onClick: () => void }) {
                   进度: {progress.current} / {progress.total} (成功: {progress.success})
                 </p>
               </div>
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  import('./lib/taggerState').then(({ taggerState }) => taggerState.dismiss());
+                }}
+                className="p-1 hover:bg-white/20 rounded-full transition text-white/60 hover:text-white shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
             <div className="w-full bg-black/40 rounded-full h-1.5 overflow-hidden">
               <div 
