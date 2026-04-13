@@ -247,6 +247,16 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
     const safeName = getSafeFilename(char.name);
     const exportFileName = `${safeName}.png`;
     
+    const rawData = char.data;
+    const isPreset = !!(rawData.prompts || rawData.temperature !== undefined || rawData.top_p !== undefined);
+    const isStandaloneWorldbook = rawData.entries !== undefined;
+    const isTheme = rawData.blur_strength !== undefined || rawData.main_text_color !== undefined || rawData.chat_display !== undefined;
+
+    if (isPreset || isStandaloneWorldbook || isTheme) {
+      zipFolder.file(`${safeName}.json`, JSON.stringify(char.data, null, 2));
+      return;
+    }
+    
     if (char.originalFile) {
       const blob = char.originalFile;
       

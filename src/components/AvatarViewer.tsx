@@ -53,6 +53,41 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
     };
   }, [character.avatarHistory, character.avatarBlob]);
 
+  const convertToPng = async (blob: Blob): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        
+        // Resize if too large (mobile canvas limit prevention)
+        const MAX_SIZE = 1024;
+        if (width > MAX_SIZE || height > MAX_SIZE) {
+          if (width > height) {
+            height = Math.round((height * MAX_SIZE) / width);
+            width = MAX_SIZE;
+          } else {
+            width = Math.round((width * MAX_SIZE) / height);
+            height = MAX_SIZE;
+          }
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('No canvas context'));
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob((b) => {
+          if (b) resolve(b);
+          else reject(new Error('Canvas toBlob failed'));
+        }, 'image/png');
+      };
+      img.onerror = reject;
+      img.src = URL.createObjectURL(blob);
+    });
+  };
+
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -66,14 +101,21 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
     }
     
     // Inject current character data into the new PNG so it becomes a valid Tavern card
-    let finalFile = file;
+    let finalFile: File | Blob = file;
     try {
-      if (file.type === 'image/png' || file.name.endsWith('.png')) {
-        const { injectTavernData } = await import('../lib/png');
-        const buffer = await file.arrayBuffer();
-        const newBuffer = injectTavernData(buffer, character.data);
-        finalFile = new File([newBuffer], file.name, { type: 'image/png' });
+      let pngBlob: Blob = file;
+      if (file.type !== 'image/png' && !(file.name && file.name.endsWith('.png'))) {
+        pngBlob = await convertToPng(file);
       }
+      
+      const { injectTavernData } = await import('../lib/png');
+      const buffer = await pngBlob.arrayBuffer();
+      const newBuffer = injectTavernData(buffer, character.data);
+      
+      // Use Blob instead of File for better mobile compatibility
+      finalFile = new Blob([newBuffer], { type: 'image/png' });
+      // Add name property to act like a File
+      (finalFile as any).name = (file.name || 'avatar').replace(/\.[^/.]+$/, "") + ".png";
     } catch (err) {
       console.error("Failed to inject data into new avatar", err);
     }
@@ -98,15 +140,19 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
   const handleSetAsAvatar = async () => {
     if (!previewBlob || previewBlob === character.avatarBlob) return;
 
-    // Convert Blob to File if needed and inject current data
-    let finalFile = new File([previewBlob], 'avatar.png', { type: previewBlob.type });
+    let finalFile: File | Blob = previewBlob;
     try {
-      if (previewBlob.type === 'image/png') {
-        const { injectTavernData } = await import('../lib/png');
-        const buffer = await previewBlob.arrayBuffer();
-        const newBuffer = injectTavernData(buffer, character.data);
-        finalFile = new File([newBuffer], 'avatar.png', { type: 'image/png' });
+      let pngBlob: Blob = previewBlob;
+      if (previewBlob.type !== 'image/png') {
+        pngBlob = await convertToPng(previewBlob);
       }
+      
+      const { injectTavernData } = await import('../lib/png');
+      const buffer = await pngBlob.arrayBuffer();
+      const newBuffer = injectTavernData(buffer, character.data);
+      
+      finalFile = new Blob([newBuffer], { type: 'image/png' });
+      (finalFile as any).name = 'avatar.png';
     } catch (err) {
       console.error("Failed to inject data into history avatar", err);
     }

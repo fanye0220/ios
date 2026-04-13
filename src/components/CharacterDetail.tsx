@@ -176,6 +176,7 @@ export function CharacterDetail({ id, onBack }: Props) {
   const rawData = character.data;
   const isPreset = !!(rawData.prompts || rawData.temperature !== undefined || rawData.top_p !== undefined);
   const isStandaloneWorldbook = rawData.entries !== undefined;
+  const isTheme = rawData.blur_strength !== undefined || rawData.main_text_color !== undefined || rawData.chat_display !== undefined;
 
   const getSafeFilename = (name: string) => {
     return name.replace(/[\\/:*?"<>|]/g, '_') || 'character';
@@ -192,6 +193,11 @@ export function CharacterDetail({ id, onBack }: Props) {
   };
 
   const handleExportPng = async () => {
+    if (isPreset || isStandaloneWorldbook || isTheme) {
+      handleExportJson();
+      return;
+    }
+
     let baseBlob = character.avatarBlob;
     if (!baseBlob && character.originalFile && (character.originalFile.type === 'image/png' || character.originalFile.name.endsWith('.png'))) {
       baseBlob = character.originalFile;
@@ -1266,13 +1272,39 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
           <h3 className="text-xl font-bold">{book.name || (book.data && book.data.name) || '世界书'}</h3>
           {(book.description || (book.data && book.data.description)) && <p className="text-white/60 text-sm mt-1">{book.description || book.data.description}</p>}
         </div>
-        <button 
-          onClick={() => setShowControls(!showControls)}
-          className={`p-2 rounded-full transition ${showControls ? 'bg-purple-500 text-white' : 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/30'}`}
-          title="管理世界书"
-        >
-          <Edit2 className="w-5 h-5" />
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              let exportData = book;
+              // If it's an embedded worldbook and entries is an array, convert to object for standalone export
+              if (Array.isArray(book.entries)) {
+                exportData = { ...book, entries: {} };
+                book.entries.forEach((e: any, i: number) => {
+                  exportData.entries[String(i)] = { ...e, uid: e.uid !== undefined ? e.uid : i };
+                });
+              }
+              
+              const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `${(book.name || (book.data && book.data.name) || 'worldbook').replace(/[\\/:*?"<>|]/g, '_')}.json`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            className="p-2 rounded-full bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 transition"
+            title="导出世界书"
+          >
+            <Download className="w-5 h-5" />
+          </button>
+          <button 
+            onClick={() => setShowControls(!showControls)}
+            className={`p-2 rounded-full transition ${showControls ? 'bg-purple-500 text-white' : 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/30'}`}
+            title="管理世界书"
+          >
+            <Edit2 className="w-5 h-5" />
+          </button>
+        </div>
       </div>
 
       <AnimatePresence>

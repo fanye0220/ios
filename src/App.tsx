@@ -57,11 +57,11 @@ function TaggerWidget({ onClick }: { onClick: () => void }) {
       <AnimatePresence>
         {shouldShow && (
           <motion.div
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 50 }}
+            initial={{ opacity: 0, y: -50, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: -50, x: '-50%' }}
             onClick={onClick}
-            className="fixed bottom-6 right-6 z-50 bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-2xl rounded-2xl p-4 cursor-pointer hover:bg-slate-700/90 transition-colors w-72"
+            className="fixed top-20 left-1/2 z-50 bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-2xl rounded-2xl p-4 cursor-pointer hover:bg-slate-700/90 transition-colors w-72"
           >
             <div className="flex items-center gap-3 mb-2">
               {isPaused ? (

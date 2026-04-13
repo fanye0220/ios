@@ -35,13 +35,15 @@ export function AIRecommender({ onClose, onSelectChar, onOpenSettings }: { onClo
       const response = await getCharacters(1, 10000, 'all');
       let allChars = response.characters;
       
-      // 过滤掉预设和美化卡
+      // 过滤掉预设、美化卡和独立世界书
       allChars = allChars.filter(c => {
         const rawData = c.data;
         const isPreset = !!(rawData.prompts || rawData.temperature !== undefined || rawData.top_p !== undefined);
+        const isStandaloneWorldbook = rawData.entries !== undefined;
+        const isTheme = rawData.blur_strength !== undefined || rawData.main_text_color !== undefined || rawData.chat_display !== undefined;
         const tags = c.data?.tags || c.data?.data?.tags || [];
         const isBeautify = tags.some((t: string) => t.includes('美化') || t.includes('预设') || t.includes('UI') || t.includes('主题'));
-        return !isPreset && !isBeautify;
+        return !isPreset && !isBeautify && !isStandaloneWorldbook && !isTheme;
       });
 
       if (allChars.length === 0) {
@@ -77,13 +79,15 @@ export function AIRecommender({ onClose, onSelectChar, onOpenSettings }: { onClo
       const response = await getCharacters(1, 10000, 'all');
       let allChars = response.characters;
 
-      // 过滤掉预设和美化卡
+      // 过滤掉预设、美化卡和独立世界书
       allChars = allChars.filter(c => {
         const rawData = c.data;
         const isPreset = !!(rawData.prompts || rawData.temperature !== undefined || rawData.top_p !== undefined);
+        const isStandaloneWorldbook = rawData.entries !== undefined;
+        const isTheme = rawData.blur_strength !== undefined || rawData.main_text_color !== undefined || rawData.chat_display !== undefined;
         const tags = c.data?.tags || c.data?.data?.tags || [];
         const isBeautify = tags.some((t: string) => t.includes('美化') || t.includes('预设') || t.includes('UI') || t.includes('主题'));
-        return !isPreset && !isBeautify;
+        return !isPreset && !isBeautify && !isStandaloneWorldbook && !isTheme;
       });
 
       if (allChars.length === 0) {

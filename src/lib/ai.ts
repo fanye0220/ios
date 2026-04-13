@@ -211,7 +211,10 @@ ${charInfos}
     
     if (Array.isArray(tagsList)) {
       return tagsList.map(tags => {
-        if (Array.isArray(tags)) return tags.map(t => String(t));
+        if (Array.isArray(tags)) {
+          // Split by comma in case the AI returns a single string with commas
+          return tags.flatMap(t => String(t).split(/[,，、]/)).map(t => t.trim()).filter(t => t);
+        }
         return [];
       });
     }

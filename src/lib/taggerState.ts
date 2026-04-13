@@ -50,9 +50,11 @@ class TaggerState {
       const data = c.data?.data || c.data;
       const rawData = c.data;
       const isPreset = !!(rawData.prompts || rawData.temperature !== undefined || rawData.top_p !== undefined);
+      const isStandaloneWorldbook = rawData.entries !== undefined;
+      const isTheme = rawData.blur_strength !== undefined || rawData.main_text_color !== undefined || rawData.chat_display !== undefined;
       const tags = data.tags || [];
       const isBeautify = tags.some((t: string) => t.includes('美化') || t.includes('预设') || t.includes('UI') || t.includes('主题'));
-      if (isPreset || isBeautify) return false;
+      if (isPreset || isBeautify || isStandaloneWorldbook || isTheme) return false;
       return !data.tags || data.tags.length === 0;
     });
     this.notify();

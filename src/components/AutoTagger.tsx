@@ -67,12 +67,12 @@ export function AutoTagger({ onClose, onOpenSettings }: { onClose: () => void, o
                 </p>
               </div>
               
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <select
                   value={batchSize}
                   onChange={(e) => taggerState.setBatchSize(Number(e.target.value))}
                   disabled={isTagging}
-                  className="bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                  className="bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-purple-500 disabled:opacity-50 flex-1 sm:flex-none min-w-[140px]"
                 >
                   <option value={10}>每次处理 10 个</option>
                   <option value={20}>每次处理 20 个</option>
@@ -84,16 +84,16 @@ export function AutoTagger({ onClose, onOpenSettings }: { onClose: () => void, o
                   <button
                     onClick={startTagging}
                     disabled={untaggedCharacters.length === 0}
-                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-400 hover:to-blue-400 text-white rounded-xl font-medium transition-all shadow-lg shadow-purple-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-400 hover:to-blue-400 text-white rounded-xl font-medium transition-all shadow-lg shadow-purple-500/25 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
                   >
                     <Play className="w-5 h-5" />
                     开始打标
                   </button>
                 ) : (
-                  <div className="flex gap-2">
+                  <div className="flex flex-1 sm:flex-none gap-2">
                     <button
                       onClick={togglePause}
-                      className={`flex items-center gap-2 px-4 py-3 rounded-xl font-medium transition-all ${
+                      className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-medium transition-all whitespace-nowrap ${
                         isPaused 
                           ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30' 
                           : 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
@@ -104,7 +104,7 @@ export function AutoTagger({ onClose, onOpenSettings }: { onClose: () => void, o
                     </button>
                     <button
                       onClick={stopTagging}
-                      className="flex items-center gap-2 px-4 py-3 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl font-medium transition-all"
+                      className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-3 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl font-medium transition-all whitespace-nowrap"
                     >
                       <Square className="w-5 h-5" />
                       停止
