@@ -15,6 +15,83 @@ import { AutoTagger } from './components/AutoTagger';
 import { AIRecommender } from './components/AIRecommender';
 import { SettingsModal } from './components/SettingsModal';
 import { migrateDatabase } from './lib/db';
+import { useTaggerState } from './lib/taggerState';
+import { Tag, Loader2, AlertCircle, Pause, X } from 'lucide-react';
+
+function TaggerWidget({ onClick }: { onClick: () => void }) {
+  const { isTagging, isPaused, progress, logs } = useTaggerState();
+  const [errorToast, setErrorToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    import('./lib/taggerState').then(({ taggerState }) => {
+      taggerState.setErrorCallback((msg) => {
+        setErrorToast(msg);
+        setTimeout(() => setErrorToast(null), 5000);
+      });
+    });
+  }, []);
+  
+  // Only show if tagging is active, paused, or there's a recent error
+  const hasError = logs.some(l => l.status === 'failed');
+  const shouldShow = isTagging || isPaused || (hasError && progress.current > 0 && progress.current < progress.total);
+
+  return (
+    <>
+      <AnimatePresence>
+        {errorToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -50, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: -50, x: '-50%' }}
+            className="fixed top-6 left-1/2 z-[100] bg-red-500 text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3"
+          >
+            <AlertCircle className="w-5 h-5" />
+            <span className="font-medium">{errorToast}</span>
+            <button onClick={() => setErrorToast(null)} className="p-1 hover:bg-white/20 rounded-full transition">
+              <X className="w-4 h-4" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {shouldShow && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            onClick={onClick}
+            className="fixed bottom-6 right-6 z-50 bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-2xl rounded-2xl p-4 cursor-pointer hover:bg-slate-700/90 transition-colors w-72"
+          >
+            <div className="flex items-center gap-3 mb-2">
+              {isPaused ? (
+                <Pause className="w-5 h-5 text-yellow-400" />
+              ) : hasError ? (
+                <AlertCircle className="w-5 h-5 text-red-400" />
+              ) : (
+                <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+              )}
+              <div className="flex-1">
+                <h4 className="text-sm font-semibold text-white">
+                  {isPaused ? '自动打标已暂停' : hasError ? '自动打标遇到错误' : '正在后台打标...'}
+                </h4>
+                <p className="text-xs text-white/50">
+                  进度: {progress.current} / {progress.total} (成功: {progress.success})
+                </p>
+              </div>
+            </div>
+            <div className="w-full bg-black/40 rounded-full h-1.5 overflow-hidden">
+              <div 
+                className={`h-full transition-all duration-500 ${isPaused ? 'bg-yellow-500' : hasError ? 'bg-red-500' : 'bg-gradient-to-r from-purple-500 to-blue-500'}`}
+                style={{ width: `${(progress.current / Math.max(1, progress.total)) * 100}%` }}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
 
 export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -112,13 +189,15 @@ export default function App() {
 
         <AnimatePresence>
           {selectedCharId && (
-            <CharacterDetail
-              id={selectedCharId}
-              onBack={() => {
-                setSelectedCharId(null);
-                setRefreshKey(prev => prev + 1);
-              }}
-            />
+            <div className="absolute inset-0 z-50 bg-slate-900">
+              <CharacterDetail
+                id={selectedCharId}
+                onBack={() => {
+                  setSelectedCharId(null);
+                  setRefreshKey(prev => prev + 1);
+                }}
+              />
+            </div>
           )}
         </AnimatePresence>
       </div>
@@ -134,6 +213,12 @@ export default function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
       />
+
+      <AnimatePresence>
+        {selectedFolderId !== 'autotagger' && (
+          <TaggerWidget onClick={() => setSelectedFolderId('autotagger')} />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

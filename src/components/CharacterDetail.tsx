@@ -47,6 +47,11 @@ export function CharacterDetail({ id, onBack }: Props) {
         } else {
           setAvatarUrl(char.avatarUrlFallback || '');
         }
+        
+        // If it's a standalone worldbook, default to the worldbook tab
+        if (char.data?.entries !== undefined) {
+          setActiveTab('worldbook');
+        }
       }
     });
   }, [id]);
@@ -170,6 +175,7 @@ export function CharacterDetail({ id, onBack }: Props) {
   const data = card.data;
   const rawData = character.data;
   const isPreset = !!(rawData.prompts || rawData.temperature !== undefined || rawData.top_p !== undefined);
+  const isStandaloneWorldbook = rawData.entries !== undefined;
 
   const getSafeFilename = (name: string) => {
     return name.replace(/[\\/:*?"<>|]/g, '_') || 'character';
@@ -186,58 +192,20 @@ export function CharacterDetail({ id, onBack }: Props) {
   };
 
   const handleExportPng = async () => {
-    if (character.originalFile) {
+    let baseBlob = character.avatarBlob;
+    if (!baseBlob && character.originalFile && (character.originalFile.type === 'image/png' || character.originalFile.name.endsWith('.png'))) {
+      baseBlob = character.originalFile;
+    }
+
+    if (baseBlob) {
       try {
-        const buffer = await character.originalFile.arrayBuffer();
+        const buffer = await baseBlob.arrayBuffer();
         const newBuffer = injectTavernData(buffer, character.data);
         const blob = new Blob([newBuffer], { type: 'image/png' });
         
         const safeName = getSafeFilename(character.name);
         const exportFileName = `${safeName}.png`;
         
-        const targetData = character.data.data ? character.data.data : character.data;
-        const hasQR = targetData.extensions?.quick_replies && targetData.extensions.quick_replies.length > 0;
-        const hasAvatars = character.avatarHistory && character.avatarHistory.length > 0;
-        
-        if (hasQR || hasAvatars) {
-          const zip = new JSZip();
-          
-          zip.file(exportFileName, blob);
-          
-          if (hasQR) {
-            const qrFileName = targetData.extensions?.qr_filename || `${safeName}_qr.json`;
-            zip.file(qrFileName, JSON.stringify(targetData.extensions.quick_replies, null, 2));
-          }
-          
-          if (hasAvatars) {
-            const avatarsFolder = zip.folder('替换卡面');
-            if (avatarsFolder) {
-              character.avatarHistory!.forEach((avatarBlob, index) => {
-                let ext = 'png';
-                let fileName = `替换卡面_${index + 1}.${ext}`;
-                if (avatarBlob instanceof File) {
-                  fileName = avatarBlob.name;
-                } else {
-                  if (avatarBlob.type === 'image/jpeg') ext = 'jpg';
-                  else if (avatarBlob.type === 'image/webp') ext = 'webp';
-                  fileName = `替换卡面_${index + 1}.${ext}`;
-                }
-                avatarsFolder.file(fileName, avatarBlob);
-              });
-            }
-          }
-          
-          const zipBlob = await zip.generateAsync({ type: 'blob' });
-          const url = URL.createObjectURL(zipBlob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `${safeName}.zip`;
-          a.click();
-          URL.revokeObjectURL(url);
-          return;
-        }
-
-        // Fallback to just PNG if no QR/Avatars
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -246,11 +214,11 @@ export function CharacterDetail({ id, onBack }: Props) {
         URL.revokeObjectURL(url);
       } catch (e) {
         console.error("Failed to export PNG", e);
-        setShowExportAlert(true);
+        if (!isPreset && !isStandaloneWorldbook) setShowExportAlert(true);
         handleExportJson();
       }
     } else {
-      setShowExportAlert(true);
+      if (!isPreset && !isStandaloneWorldbook) setShowExportAlert(true);
       handleExportJson();
     }
   };
@@ -623,9 +591,13 @@ export function CharacterDetail({ id, onBack }: Props) {
         {/* Tabs */}
         <div className="flex px-4 gap-2 mb-4 overflow-x-auto hide-scrollbar">
           {[
-            { id: 'profile', icon: User, label: isPreset ? '预设条目' : '档案' },
-            ...(!isPreset ? [
+            ...(!isStandaloneWorldbook ? [
+              { id: 'profile', icon: User, label: isPreset ? '预设条目' : '档案' },
+            ] : []),
+            ...(!isPreset && !isStandaloneWorldbook ? [
               { id: 'greetings', icon: MessageSquare, label: '开场白' },
+            ] : []),
+            ...(!isPreset ? [
               { id: 'worldbook', icon: Book, label: '世界书' },
             ] : []),
           ].map((tab) => (
@@ -776,25 +748,36 @@ export function CharacterDetail({ id, onBack }: Props) {
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: 20 }}
                 >
-                  {data.character_book || data.extensions?.character_book ? (
+                  {(data.character_book || data.extensions?.character_book || rawData.entries) ? (
                     <WorldbookViewer 
-                      book={data.character_book || data.extensions?.character_book} 
+                      book={data.character_book || data.extensions?.character_book || rawData} 
                       onUpdate={(newBook) => {
                         const updatedChar = { ...character };
-                        let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
                         
-                        targetData.character_book = newBook;
-                        targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
+                        if (isStandaloneWorldbook) {
+                          // Standalone worldbook
+                          updatedChar.data = newBook;
+                        } else {
+                          // Embedded worldbook
+                          let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
+                          targetData.character_book = newBook;
+                          targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
+                        }
                         
                         saveCharacter(updatedChar).then(() => setCharacter(updatedChar));
                       }}
                       onDelete={() => {
                         if (confirm('确定要删除整个世界书吗？此操作不可恢复。')) {
                           const updatedChar = { ...character };
-                          let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
                           
-                          if (targetData.character_book) delete targetData.character_book;
-                          if (targetData.extensions?.character_book) delete targetData.extensions.character_book;
+                          if (isStandaloneWorldbook) {
+                            // Standalone worldbook - clear entries
+                            updatedChar.data.entries = {};
+                          } else {
+                            let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
+                            if (targetData.character_book) delete targetData.character_book;
+                            if (targetData.extensions?.character_book) delete targetData.extensions.character_book;
+                          }
                           
                           saveCharacter(updatedChar).then(() => setCharacter(updatedChar));
                         }
@@ -835,25 +818,37 @@ export function CharacterDetail({ id, onBack }: Props) {
                                 
                                 // Handle both array format and object format (like the provided example)
                                 let entries: any = [];
+                                let isV3 = false;
                                 if (Array.isArray(json.entries)) {
                                   entries = json.entries;
                                 } else if (json.entries && typeof json.entries === 'object') {
                                   entries = json.entries; // Keep as object!
                                 } else if (Array.isArray(json)) {
                                   entries = json;
+                                } else if (json.data && json.data.entries) {
+                                  // Handle Tavern V3 Worldbook format
+                                  entries = json.data.entries;
+                                  isV3 = true;
                                 }
 
-                                const newBook = { 
-                                  name: json.name || file.name.replace('.json', ''), 
-                                  description: json.description || '', 
-                                  entries: entries 
-                                };
+                                let newBook;
+                                if (isV3) {
+                                  newBook = json; // Keep the whole V3 structure
+                                } else {
+                                  newBook = { 
+                                    name: json.name || file.name.replace('.json', ''), 
+                                    description: json.description || '', 
+                                    entries: entries 
+                                  };
+                                }
 
                                 const updatedChar = { ...character };
                                 let targetData = updatedChar.data.data ? updatedChar.data.data : updatedChar.data;
                                 
+                                // Ensure we're setting it correctly
                                 targetData.character_book = newBook;
-                                targetData.extensions = { ...(targetData.extensions || {}), character_book: newBook };
+                                if (!targetData.extensions) targetData.extensions = {};
+                                targetData.extensions.character_book = newBook;
                                 
                                 await saveCharacter(updatedChar);
                                 setCharacter(updatedChar);
@@ -1084,22 +1079,34 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
   const [showControls, setShowControls] = useState(false);
   const [viewingEntryIndex, setViewingEntryIndex] = useState<number | null>(null);
 
-  if (!book || !book.entries) return null;
+  if (!book || (!book.entries && !(book.data && book.data.entries))) return null;
   
-  // Always work with an array internally
-  const entries = Array.isArray(book.entries) ? book.entries : Object.values(book.entries);
+  // Always work with an array internally, handling V3 format (book.data.entries)
+  let entries: any[] = [];
+  if (Array.isArray(book.entries)) {
+    entries = book.entries;
+  } else if (typeof book.entries === 'object') {
+    entries = Object.values(book.entries);
+  } else if (book.data && book.data.entries) {
+    entries = Array.isArray(book.data.entries) ? book.data.entries : Object.values(book.data.entries);
+  }
 
   // Helper to save entries in the format Tavern expects (object with string indices)
   const saveEntries = (newEntriesArray: any[]) => {
-    const isOriginallyObject = !Array.isArray(book.entries);
-    if (isOriginallyObject) {
-      const entriesObj: Record<string, any> = {};
-      newEntriesArray.forEach((entry, idx) => {
-        entriesObj[String(idx)] = { ...entry, uid: entry.uid !== undefined ? entry.uid : idx };
-      });
-      onUpdate({ ...book, entries: entriesObj });
+    if (book.data && book.data.entries) {
+      // V3 format
+      onUpdate({ ...book, data: { ...book.data, entries: newEntriesArray } });
     } else {
-      onUpdate({ ...book, entries: newEntriesArray });
+      const isOriginallyObject = !Array.isArray(book.entries);
+      if (isOriginallyObject) {
+        const entriesObj: Record<string, any> = {};
+        newEntriesArray.forEach((entry, idx) => {
+          entriesObj[String(idx)] = { ...entry, uid: entry.uid !== undefined ? entry.uid : idx };
+        });
+        onUpdate({ ...book, entries: entriesObj });
+      } else {
+        onUpdate({ ...book, entries: newEntriesArray });
+      }
     }
   };
 
@@ -1112,6 +1119,7 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
 
     setEditForm({
       ...entry,
+      content: entry.content || entry.entry || '',
       keys: keysStr,
       enabled: isEnabled,
       insertion_order: order
@@ -1140,6 +1148,8 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
       ...editForm,
       key: keysArray, // Tavern uses 'key'
       keys: keysArray, // Keep 'keys' for compatibility
+      content: editForm.content, // Ensure content is saved
+      entry: editForm.content, // Save to 'entry' for V3 compatibility
       order: parseInt(editForm.insertion_order) || 50, // Tavern uses 'order'
       insertion_order: parseInt(editForm.insertion_order) || 50,
       disable: !editForm.enabled, // Tavern uses 'disable'
@@ -1253,8 +1263,8 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
     <div className="space-y-6">
       <div className="flex justify-between items-center mb-4">
         <div>
-          <h3 className="text-xl font-bold">{book.name || '世界书'}</h3>
-          {book.description && <p className="text-white/60 text-sm mt-1">{book.description}</p>}
+          <h3 className="text-xl font-bold">{book.name || (book.data && book.data.name) || '世界书'}</h3>
+          {(book.description || (book.data && book.data.description)) && <p className="text-white/60 text-sm mt-1">{book.description || book.data.description}</p>}
         </div>
         <button 
           onClick={() => setShowControls(!showControls)}
@@ -1336,7 +1346,7 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
                     className="group cursor-pointer mt-2"
                     onClick={() => setViewingEntryIndex(i)}
                   >
-                    <div className="text-white/70 text-sm line-clamp-2">{entry.content}</div>
+                    <div className="text-white/70 text-sm line-clamp-2">{entry.content || entry.entry || ''}</div>
                     <div className="mt-1.5 text-purple-400 text-xs font-medium flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
                       <span>阅读全文</span>
                       <ChevronRight className="w-3 h-3" />
@@ -1357,7 +1367,7 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
               const keysArray = entry.key || entry.keys || [];
               return Array.isArray(keysArray) ? keysArray.join(', ') : keysArray || '无关键词';
             })()} 
-            content={entries[viewingEntryIndex].content} 
+            content={entries[viewingEntryIndex].content || entries[viewingEntryIndex].entry || ''} 
             onClose={() => setViewingEntryIndex(null)} 
           />
         )}

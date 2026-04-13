@@ -33,8 +33,19 @@ export function AIRecommender({ onClose, onSelectChar, onOpenSettings }: { onClo
     
     try {
       const response = await getCharacters(1, 10000, 'all');
-      const allChars = response.characters;
+      let allChars = response.characters;
+      
+      // 过滤掉预设和美化卡
+      allChars = allChars.filter(c => {
+        const rawData = c.data;
+        const isPreset = !!(rawData.prompts || rawData.temperature !== undefined || rawData.top_p !== undefined);
+        const tags = c.data?.tags || c.data?.data?.tags || [];
+        const isBeautify = tags.some((t: string) => t.includes('美化') || t.includes('预设') || t.includes('UI') || t.includes('主题'));
+        return !isPreset && !isBeautify;
+      });
+
       if (allChars.length === 0) {
+        addLog('没有找到符合条件的角色卡。', 'error');
         return;
       }
       
@@ -64,9 +75,19 @@ export function AIRecommender({ onClose, onSelectChar, onOpenSettings }: { onClo
     try {
       addLog('开始分析您的需求...');
       const response = await getCharacters(1, 10000, 'all');
-      const allChars = response.characters;
+      let allChars = response.characters;
+
+      // 过滤掉预设和美化卡
+      allChars = allChars.filter(c => {
+        const rawData = c.data;
+        const isPreset = !!(rawData.prompts || rawData.temperature !== undefined || rawData.top_p !== undefined);
+        const tags = c.data?.tags || c.data?.data?.tags || [];
+        const isBeautify = tags.some((t: string) => t.includes('美化') || t.includes('预设') || t.includes('UI') || t.includes('主题'));
+        return !isPreset && !isBeautify;
+      });
+
       if (allChars.length === 0) {
-        addLog('本地角色库为空，无法进行推荐。', 'error');
+        addLog('本地角色库为空或没有符合条件的角色，无法进行推荐。', 'error');
         setIsSearching(false);
         return;
       }

@@ -17,7 +17,19 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
   const loadDuplicates = async () => {
     setLoading(true);
     const groups = await findDuplicates();
-    setDuplicateGroups(groups);
+    
+    // 过滤掉预设和美化卡
+    const filteredGroups = groups.filter(group => {
+      if (group.characters.length === 0) return false;
+      const c = group.characters[0].char;
+      const rawData = c.data;
+      const isPreset = !!(rawData.prompts || rawData.temperature !== undefined || rawData.top_p !== undefined);
+      const tags = c.data?.tags || c.data?.data?.tags || [];
+      const isBeautify = tags.some((t: string) => t.includes('美化') || t.includes('预设') || t.includes('UI') || t.includes('主题'));
+      return !isPreset && !isBeautify;
+    });
+
+    setDuplicateGroups(filteredGroups);
     setLoading(false);
   };
 

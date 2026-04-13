@@ -64,12 +64,26 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
         newHistory.unshift(character.avatarBlob);
       }
     }
-    newHistory.unshift(file);
+    
+    // Inject current character data into the new PNG so it becomes a valid Tavern card
+    let finalFile = file;
+    try {
+      if (file.type === 'image/png' || file.name.endsWith('.png')) {
+        const { injectTavernData } = await import('../lib/png');
+        const buffer = await file.arrayBuffer();
+        const newBuffer = injectTavernData(buffer, character.data);
+        finalFile = new File([newBuffer], file.name, { type: 'image/png' });
+      }
+    } catch (err) {
+      console.error("Failed to inject data into new avatar", err);
+    }
+    
+    newHistory.unshift(finalFile);
 
     const updatedCharacter = {
       ...character,
-      avatarBlob: file,
-      originalFile: file,
+      avatarBlob: finalFile,
+      originalFile: finalFile,
       avatarHistory: newHistory
     };
 
@@ -84,13 +98,23 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
   const handleSetAsAvatar = async () => {
     if (!previewBlob || previewBlob === character.avatarBlob) return;
 
-    // Convert Blob to File if needed
-    const file = new File([previewBlob], 'avatar.png', { type: previewBlob.type });
+    // Convert Blob to File if needed and inject current data
+    let finalFile = new File([previewBlob], 'avatar.png', { type: previewBlob.type });
+    try {
+      if (previewBlob.type === 'image/png') {
+        const { injectTavernData } = await import('../lib/png');
+        const buffer = await previewBlob.arrayBuffer();
+        const newBuffer = injectTavernData(buffer, character.data);
+        finalFile = new File([newBuffer], 'avatar.png', { type: 'image/png' });
+      }
+    } catch (err) {
+      console.error("Failed to inject data into history avatar", err);
+    }
 
     const updatedCharacter = {
       ...character,
-      avatarBlob: previewBlob,
-      originalFile: file
+      avatarBlob: finalFile,
+      originalFile: finalFile
     };
 
     await saveCharacter(updatedCharacter);

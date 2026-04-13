@@ -81,9 +81,10 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           
           const isTheme = data.blur_strength !== undefined || data.main_text_color !== undefined || data.chat_display !== undefined;
           const isAIPreset = data.temperature !== undefined || data.prompts !== undefined || data.top_p !== undefined;
-          const isCharacter = !isTheme && !isAIPreset && !!(data.name || data.data?.name);
+          const isWorldbook = data.entries !== undefined || (data.data && data.data.entries !== undefined);
+          const isCharacter = !isTheme && !isAIPreset && !isWorldbook && !!(data.name || data.data?.name);
           
-          if (!isCharacter && !isTheme && !isAIPreset) {
+          if (!isCharacter && !isTheme && !isAIPreset && !isWorldbook) {
              throw new Error("非酒馆卡或预设格式：无法识别的数据结构。");
           }
           
@@ -93,6 +94,9 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           } else if (isAIPreset) {
             targetFolderId = await getOrCreateNestedFolder(['预设']);
             charName = data.name || file.name.replace(/\.[^/.]+$/, "");
+          } else if (isWorldbook) {
+            targetFolderId = await getOrCreateNestedFolder(['世界书']);
+            charName = data.name || data.data?.name || file.name.replace(/\.[^/.]+$/, "");
           } else if (isCharacter) {
             charName = data.name || data.data?.name || 'Unknown Character';
           }
