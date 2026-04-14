@@ -125,54 +125,14 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
     
     // Demote mainItems that are likely alternate avatars
     const itemsToDemote = new Set<ParsedItem>();
+    const ALT_FOLDERS = ['替换卡面', '替换头像', 'avatars', 'alt', 'alternate'];
     
     for (const item of mainItems) {
-      // If the file is in a folder named '替换卡面', 'avatars', 'alt', etc.
+      // 1. ONLY demote if it is explicitly inside a replacement avatar folder
       const folderParts = item.folder.split('/');
       const lastFolder = folderParts[folderParts.length - 1];
-      if (lastFolder === '替换卡面' || lastFolder === 'avatars' || lastFolder === 'alt') {
+      if (ALT_FOLDERS.includes(lastFolder.toLowerCase())) {
         itemsToDemote.add(item);
-        continue;
-      }
-      
-      // Or if there is another mainItem that is higher up in the same directory tree
-      const parentMains = mainItems.filter(other => 
-        other !== item && 
-        item.folder.startsWith(other.folder + '/')
-      );
-      
-      if (parentMains.length > 0) {
-        itemsToDemote.add(item);
-      }
-    }
-    
-    // Group remaining non-demoted mainItems by folder
-    const activeMains = mainItems.filter(item => !itemsToDemote.has(item));
-    const mainsByFolder = new Map<string, ParsedItem[]>();
-    for (const item of activeMains) {
-      if (!mainsByFolder.has(item.folder)) {
-        mainsByFolder.set(item.folder, []);
-      }
-      mainsByFolder.get(item.folder)!.push(item);
-    }
-    
-    for (const [folder, items] of mainsByFolder.entries()) {
-      if (items.length > 1) {
-        let bestMain = items[0];
-        if (folder) {
-          const folderName = folder.split('/').pop() || '';
-          const match = items.find(item => {
-            const fileName = item.file.name.replace(/\.[^/.]+$/, "");
-            return fileName === folderName || fileName.includes(folderName) || folderName.includes(fileName);
-          });
-          if (match) bestMain = match;
-        }
-        
-        for (const item of items) {
-          if (item !== bestMain) {
-            itemsToDemote.add(item);
-          }
-        }
       }
     }
     
@@ -194,9 +154,18 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
     
     for (const alt of altImages) {
       const possibleMains = mainItems.filter(main => {
-        if (main.folder === '') return true; // Root main card can be a fallback
-        return alt.folder === main.folder || alt.folder.startsWith(main.folder + '/');
+        // ONLY match if the alt image is inside the '替换头像' folder of the main card
+        const mainPrefix = main.folder ? main.folder + '/' : '';
+        if (alt.folder.startsWith(mainPrefix)) {
+          const relative = alt.folder.substring(mainPrefix.length);
+          const firstFolder = relative.split('/')[0];
+          if (ALT_FOLDERS.includes(firstFolder.toLowerCase())) {
+            return true;
+          }
+        }
+        return false;
       });
+      
       possibleMains.sort((a, b) => b.folder.length - a.folder.length);
       
       if (possibleMains.length > 0) {
