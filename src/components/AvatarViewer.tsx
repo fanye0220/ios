@@ -101,7 +101,13 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
     }
     
     // Inject current character data into the new PNG so it becomes a valid Tavern card
-    let finalFile: File | Blob = file;
+    let finalFile: File;
+    if (file instanceof File) {
+      finalFile = file;
+    } else {
+      finalFile = new File([file], file.name || 'avatar.png', { type: file.type });
+    }
+    
     try {
       let pngBlob: Blob = file;
       if (file.type !== 'image/png' && !(file.name && file.name.endsWith('.png'))) {
@@ -112,10 +118,7 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
       const buffer = await pngBlob.arrayBuffer();
       const newBuffer = injectTavernData(buffer, character.data);
       
-      // Use Blob instead of File for better mobile compatibility
-      finalFile = new Blob([newBuffer], { type: 'image/png' });
-      // Add name property to act like a File
-      (finalFile as any).name = (file.name || 'avatar').replace(/\.[^/.]+$/, "") + ".png";
+      finalFile = new File([newBuffer], (file.name || 'avatar').replace(/\.[^/.]+$/, "") + ".png", { type: 'image/png' });
     } catch (err) {
       console.error("Failed to inject data into new avatar", err);
     }
@@ -140,7 +143,13 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
   const handleSetAsAvatar = async () => {
     if (!previewBlob || previewBlob === character.avatarBlob) return;
 
-    let finalFile: File | Blob = previewBlob;
+    let finalFile: File;
+    if (previewBlob instanceof File) {
+      finalFile = previewBlob;
+    } else {
+      finalFile = new File([previewBlob], 'avatar.png', { type: previewBlob.type });
+    }
+    
     try {
       let pngBlob: Blob = previewBlob;
       if (previewBlob.type !== 'image/png') {
@@ -151,8 +160,7 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
       const buffer = await pngBlob.arrayBuffer();
       const newBuffer = injectTavernData(buffer, character.data);
       
-      finalFile = new Blob([newBuffer], { type: 'image/png' });
-      (finalFile as any).name = 'avatar.png';
+      finalFile = new File([newBuffer], 'avatar.png', { type: 'image/png' });
     } catch (err) {
       console.error("Failed to inject data into history avatar", err);
     }

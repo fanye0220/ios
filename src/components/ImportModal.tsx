@@ -13,11 +13,21 @@ interface Props {
   folderId?: string | null;
 }
 
+interface ParsedItem {
+  file: File;
+  path: string;
+  folder: string;
+  isMain: boolean;
+  data?: any;
+  isImage: boolean;
+  errorMsg?: string;
+}
+
 export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importErrors, setImportErrors] = useState<{file: string, error: string}[]>([]);
-  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
+  const [progress, setProgress] = useState<{ current: number; total: number; message?: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
@@ -46,105 +56,239 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
     return currentParentId || undefined;
   };
 
-  const processChunk = async (files: File[], startIndex: number, chunkSize: number, total: number, successCount: number, errors: {file: string, error: string}[]) => {
-    const endIndex = Math.min(startIndex + chunkSize, total);
-    const charsToSave: CharacterCard[] = [];
+  const parseChunk = async (files: File[], startIndex: number, chunkSize: number, parsedItems: ParsedItem[], errors: {file: string, error: string}[]) => {
+    const endIndex = Math.min(startIndex + chunkSize, files.length);
     
     for (let i = startIndex; i < endIndex; i++) {
       const file = files[i];
+      const path = file.webkitRelativePath || file.name;
+      const folder = path.substring(0, path.lastIndexOf('/')) || '';
+      const isImage = file.type.startsWith('image/') || file.name.match(/\.(png|jpe?g|webp|gif)$/i) !== null;
+      
+      let isMain = false;
+      let data: any = null;
+      let errorMsg = '';
+      
       try {
-        let data: any = null;
-        let avatarBlob: Blob | undefined;
-        let avatarUrlFallback = '';
-        let targetFolderId = folderId || undefined;
-        let charName = 'Unknown';
-
-        if (file.webkitRelativePath) {
-          const parts = file.webkitRelativePath.split('/');
-          if (parts.length > 1) {
-            const folderParts = parts.slice(0, -1);
-            targetFolderId = await getOrCreateNestedFolder(folderParts);
-          }
-        }
-
         if (file.type === 'image/png' || file.name.endsWith('.png')) {
           const buffer = await file.arrayBuffer();
           data = await extractTavernData(buffer);
-          if (!data) {
-            throw new Error("非酒馆卡或预设格式：未找到Tavern角色数据。");
+          if (data) {
+            isMain = true;
+          } else {
+            errorMsg = "非酒馆卡或预设格式：未找到Tavern角色数据。";
           }
-          avatarBlob = file;
-          charName = data.name || data.data?.name || 'Unknown Character';
-        } else {
+        } else if (file.type === 'application/json' || file.name.endsWith('.json')) {
           const text = await file.text();
           data = JSON.parse(text);
-          
           const isTheme = data.blur_strength !== undefined || data.main_text_color !== undefined || data.chat_display !== undefined;
           const isAIPreset = data.temperature !== undefined || data.prompts !== undefined || data.top_p !== undefined;
           const isWorldbook = data.entries !== undefined || (data.data && data.data.entries !== undefined);
           const isCharacter = !isTheme && !isAIPreset && !isWorldbook && !!(data.name || data.data?.name);
           
-          if (!isCharacter && !isTheme && !isAIPreset && !isWorldbook) {
-             throw new Error("非酒馆卡或预设格式：无法识别的数据结构。");
+          if (isTheme || isAIPreset || isWorldbook || isCharacter) {
+            isMain = true;
+          } else {
+            errorMsg = "非酒馆卡或预设格式：无法识别的数据结构。";
           }
-          
-          if (isTheme) {
-            targetFolderId = await getOrCreateNestedFolder(['美化']);
-            charName = data.name || file.name.replace(/\.[^/.]+$/, "");
-          } else if (isAIPreset) {
-            targetFolderId = await getOrCreateNestedFolder(['预设']);
-            charName = data.name || file.name.replace(/\.[^/.]+$/, "");
-          } else if (isWorldbook) {
-            targetFolderId = await getOrCreateNestedFolder(['世界书']);
-            charName = data.name || data.data?.name || file.name.replace(/\.[^/.]+$/, "");
-          } else if (isCharacter) {
-            charName = data.name || data.data?.name || 'Unknown Character';
-          }
-
-          avatarUrlFallback = `https://api.dicebear.com/7.x/bottts/svg?seed=${charName}`;
+        } else {
+          errorMsg = "不支持的文件格式。";
         }
+      } catch (err: any) {
+        errorMsg = err.message || '未知错误';
+      }
+      
+      parsedItems.push({
+        file,
+        path,
+        folder,
+        isMain,
+        data,
+        isImage,
+        errorMsg: isMain ? undefined : errorMsg
+      });
+      
+      setProgress({ current: i + 1, total: files.length, message: '正在解析文件...' });
+    }
+    
+    if (endIndex < files.length) {
+      setTimeout(() => parseChunk(files, endIndex, chunkSize, parsedItems, errors), 0);
+    } else {
+      assembleAndSave(parsedItems, errors);
+    }
+  };
 
+  const assembleAndSave = async (parsedItems: ParsedItem[], errors: {file: string, error: string}[]) => {
+    let mainItems = parsedItems.filter(item => item.isMain);
+    let altImages = parsedItems.filter(item => !item.isMain && item.isImage);
+    const otherItems = parsedItems.filter(item => !item.isMain && !item.isImage);
+    
+    // Demote mainItems that are likely alternate avatars
+    const itemsToDemote = new Set<ParsedItem>();
+    
+    for (const item of mainItems) {
+      // If the file is in a folder named '替换卡面', 'avatars', 'alt', etc.
+      const folderParts = item.folder.split('/');
+      const lastFolder = folderParts[folderParts.length - 1];
+      if (lastFolder === '替换卡面' || lastFolder === 'avatars' || lastFolder === 'alt') {
+        itemsToDemote.add(item);
+        continue;
+      }
+      
+      // Or if there is another mainItem that is higher up in the same directory tree
+      const parentMains = mainItems.filter(other => 
+        other !== item && 
+        item.folder.startsWith(other.folder + '/')
+      );
+      
+      if (parentMains.length > 0) {
+        itemsToDemote.add(item);
+      }
+    }
+    
+    // Group remaining non-demoted mainItems by folder
+    const activeMains = mainItems.filter(item => !itemsToDemote.has(item));
+    const mainsByFolder = new Map<string, ParsedItem[]>();
+    for (const item of activeMains) {
+      if (!mainsByFolder.has(item.folder)) {
+        mainsByFolder.set(item.folder, []);
+      }
+      mainsByFolder.get(item.folder)!.push(item);
+    }
+    
+    for (const [folder, items] of mainsByFolder.entries()) {
+      if (items.length > 1) {
+        let bestMain = items[0];
+        if (folder) {
+          const folderName = folder.split('/').pop() || '';
+          const match = items.find(item => {
+            const fileName = item.file.name.replace(/\.[^/.]+$/, "");
+            return fileName === folderName || fileName.includes(folderName) || folderName.includes(fileName);
+          });
+          if (match) bestMain = match;
+        }
+        
+        for (const item of items) {
+          if (item !== bestMain) {
+            itemsToDemote.add(item);
+          }
+        }
+      }
+    }
+    
+    mainItems = mainItems.filter(item => !itemsToDemote.has(item));
+    for (const item of itemsToDemote) {
+      if (item.isImage) {
+        altImages.push(item);
+      } else {
+        otherItems.push(item);
+      }
+    }
+    
+    for (const item of otherItems) {
+      errors.push({ file: item.file.name, error: item.errorMsg || '无效文件' });
+    }
+    
+    const altImagesByMain = new Map<ParsedItem, File[]>();
+    const unassignedAltImages: ParsedItem[] = [];
+    
+    for (const alt of altImages) {
+      const possibleMains = mainItems.filter(main => {
+        if (main.folder === '') return true; // Root main card can be a fallback
+        return alt.folder === main.folder || alt.folder.startsWith(main.folder + '/');
+      });
+      possibleMains.sort((a, b) => b.folder.length - a.folder.length);
+      
+      if (possibleMains.length > 0) {
+        const closestMain = possibleMains[0];
+        if (!altImagesByMain.has(closestMain)) {
+          altImagesByMain.set(closestMain, []);
+        }
+        altImagesByMain.get(closestMain)!.push(alt.file);
+      } else {
+        unassignedAltImages.push(alt);
+      }
+    }
+    
+    for (const alt of unassignedAltImages) {
+      errors.push({ file: alt.file.name, error: alt.errorMsg || '作为替换卡面导入失败：未找到所属角色卡' });
+    }
+    
+    const charsToSave: CharacterCard[] = [];
+    let successCount = 0;
+    
+    for (let i = 0; i < mainItems.length; i++) {
+      const item = mainItems[i];
+      try {
+        let targetFolderId = folderId || undefined;
+        let charName = 'Unknown';
+        
+        if (item.folder) {
+          const folderParts = item.folder.split('/');
+          targetFolderId = await getOrCreateNestedFolder(folderParts);
+        }
+        
+        const data = item.data;
+        const file = item.file;
+        
+        const isTheme = data.blur_strength !== undefined || data.main_text_color !== undefined || data.chat_display !== undefined;
+        const isAIPreset = data.temperature !== undefined || data.prompts !== undefined || data.top_p !== undefined;
+        const isWorldbook = data.entries !== undefined || (data.data && data.data.entries !== undefined);
+        const isCharacter = !isTheme && !isAIPreset && !isWorldbook && !!(data.name || data.data?.name);
+        
+        if (isTheme) {
+          if (!item.folder) targetFolderId = await getOrCreateNestedFolder(['美化']);
+          charName = data.name || file.name.replace(/\.[^/.]+$/, "");
+        } else if (isAIPreset) {
+          if (!item.folder) targetFolderId = await getOrCreateNestedFolder(['预设']);
+          charName = data.name || file.name.replace(/\.[^/.]+$/, "");
+        } else if (isWorldbook) {
+          if (!item.folder) targetFolderId = await getOrCreateNestedFolder(['世界书']);
+          charName = data.name || data.data?.name || file.name.replace(/\.[^/.]+$/, "");
+        } else if (isCharacter) {
+          charName = data.name || data.data?.name || 'Unknown Character';
+        }
+        
+        const avatarUrlFallback = (file.type === 'image/png' || file.name.endsWith('.png')) 
+          ? '' 
+          : `https://api.dicebear.com/7.x/bottts/svg?seed=${charName}`;
+          
         const newChar: CharacterCard = {
           id: crypto.randomUUID(),
           name: charName,
-          avatarBlob,
+          avatarBlob: (file.type === 'image/png' || file.name.endsWith('.png')) ? file : undefined,
           avatarUrlFallback,
-          data: data, // store raw data to preserve preset structure
+          data: data,
           originalFile: (file.type === 'image/png' || file.name.endsWith('.png')) ? file : undefined,
           createdAt: Date.now(),
           folderId: targetFolderId,
+          avatarHistory: altImagesByMain.get(item) || []
         };
-
+        
         charsToSave.push(newChar);
         successCount++;
       } catch (err: any) {
-        console.error(`Failed to import ${file.name}:`, err);
-        errors.push({ file: file.name, error: err.message || '未知错误' });
+        errors.push({ file: item.file.name, error: err.message || '未知错误' });
       }
-      setProgress({ current: i + 1, total });
+      
+      setProgress({ current: i + 1, total: mainItems.length, message: '正在保存角色...' });
     }
-
+    
     if (charsToSave.length > 0) {
       await saveCharacters(charsToSave);
     }
-
-    if (endIndex < total) {
-      // Yield to main thread
-      setTimeout(() => processChunk(files, endIndex, chunkSize, total, successCount, errors), 0);
-    } else {
-      // Done
-      setProgress(null);
-      if (errors.length > 0) {
-        setImportErrors(errors);
-        if (successCount > 0) {
-          onImported();
-        }
-      } else if (successCount === 0) {
-        setError("未能成功导入任何文件。");
-      } else {
+    
+    setProgress(null);
+    if (errors.length > 0) {
+      setImportErrors(errors);
+      if (successCount > 0) {
         onImported();
-        onClose();
       }
+    } else if (successCount === 0) {
+      setError("未能成功导入任何文件。");
+    } else {
+      onImported();
+      onClose();
     }
   };
 
@@ -161,11 +305,17 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           const zip = await JSZip.loadAsync(f);
           for (const relativePath in zip.files) {
             const zipEntry = zip.files[relativePath];
-            if (!zipEntry.dir && (relativePath.endsWith('.png') || relativePath.endsWith('.json'))) {
+            if (!zipEntry.dir && (relativePath.match(/\.(png|jpe?g|webp|gif|json)$/i))) {
               const blob = await zipEntry.async('blob');
-              const extractedFile = new File([blob], zipEntry.name.split('/').pop() || 'file', { 
-                type: relativePath.endsWith('.png') ? 'image/png' : 'application/json' 
-              });
+              
+              let type = 'application/octet-stream';
+              if (relativePath.endsWith('.png')) type = 'image/png';
+              else if (relativePath.match(/\.jpe?g$/i)) type = 'image/jpeg';
+              else if (relativePath.endsWith('.webp')) type = 'image/webp';
+              else if (relativePath.endsWith('.gif')) type = 'image/gif';
+              else if (relativePath.endsWith('.json')) type = 'application/json';
+              
+              const extractedFile = new File([blob], zipEntry.name.split('/').pop() || 'file', { type });
               // Mock webkitRelativePath to preserve folder structure from ZIP
               Object.defineProperty(extractedFile, 'webkitRelativePath', {
                 value: relativePath,
@@ -179,20 +329,20 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           setError(`ZIP 文件读取失败: ${f.name}`);
           return;
         }
-      } else if (f.type === 'image/png' || f.name.endsWith('.png') || f.type === 'application/json' || f.name.endsWith('.json')) {
+      } else if (f.type.startsWith('image/') || f.name.match(/\.(png|jpe?g|webp|gif)$/i) || f.type === 'application/json' || f.name.endsWith('.json')) {
         fileArray.push(f);
       }
     }
 
     if (fileArray.length === 0) {
-      setError("未找到有效的 PNG、JSON 或 ZIP 文件。");
+      setError("未找到有效的图片、JSON 或 ZIP 文件。");
       return;
     }
 
-    setProgress({ current: 0, total: fileArray.length });
+    setProgress({ current: 0, total: fileArray.length, message: '准备导入...' });
     
     // Process in chunks of 50 to avoid blocking UI
-    processChunk(fileArray, 0, 50, fileArray.length, 0, []);
+    parseChunk(fileArray, 0, 50, [], []);
   };
 
   const handleDrop = async (e: React.DragEvent) => {
@@ -325,7 +475,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
             ) : progress ? (
               <div className="py-8 flex flex-col items-center">
                 <div className="w-16 h-16 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-4" />
-                <p className="text-lg font-medium">导入中...</p>
+                <p className="text-lg font-medium">{progress.message || '导入中...'}</p>
                 <p className="text-slate-400">{progress.current} / {progress.total}</p>
                 <div className="w-full bg-white/10 rounded-full h-2 mt-4 overflow-hidden">
                   <div 
@@ -385,7 +535,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
               type="file"
               ref={fileInputRef}
               onChange={(e) => e.target.files && handleFiles(e.target.files)}
-              accept=".png,.json,.zip,image/png,application/json,application/zip,application/x-zip-compressed"
+              accept=".png,.jpg,.jpeg,.webp,.gif,.json,.zip,image/*,application/json,application/zip,application/x-zip-compressed"
               className="hidden"
               multiple
             />

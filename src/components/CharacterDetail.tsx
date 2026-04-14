@@ -994,7 +994,7 @@ function TextPreview({ title, content, onSave, initialEditMode }: { title: strin
   );
 }
 
-function AlternateGreetingCard({ index, content, onSave, onDelete }: { index: number; content: string; onSave: (val: string) => void; onDelete: () => void }) {
+function AlternateGreetingCard({ index, content, onSave, onDelete }: { key?: string | number; index: number; content: string; onSave: (val: string) => void; onDelete: () => void }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   return (

@@ -160,6 +160,25 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
     getAllTags().then(setAllTags);
   }, [page, pageSize, folderId, searchQuery, selectedTags, sortBy, refreshTrigger]);
 
+  useEffect(() => {
+    const handleGlobalClick = () => {
+      setIsFilterOpen(false);
+      setIsSortOpen(false);
+      setIsEditingTags(false);
+      setEditingTagValue(null);
+    };
+
+    if (isFilterOpen || isSortOpen) {
+      document.addEventListener('click', handleGlobalClick);
+      document.addEventListener('touchstart', handleGlobalClick);
+    }
+
+    return () => {
+      document.removeEventListener('click', handleGlobalClick);
+      document.removeEventListener('touchstart', handleGlobalClick);
+    };
+  }, [isFilterOpen, isSortOpen]);
+
   const totalPages = Math.ceil(totalCharacters / pageSize);
 
   const toggleSelection = (id: string) => {
@@ -480,7 +499,11 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
               
               <div className="relative shrink-0">
                 <button 
-                  onClick={() => setIsSortOpen(!isSortOpen)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsSortOpen(!isSortOpen);
+                    setIsFilterOpen(false);
+                  }}
                   className={`p-2 border rounded-xl transition ${isSortOpen ? 'bg-purple-500/20 text-purple-400 border-purple-500/50' : 'bg-white/5 text-white/60 border-white/10 hover:text-white hover:bg-white/10'}`}
                 >
                   <ArrowUpDown className="w-5 h-5" />
@@ -488,14 +511,13 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                 
                 <AnimatePresence>
                   {isSortOpen && (
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={() => setIsSortOpen(false)} />
-                      <motion.div
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 10 }}
-                        className="absolute right-0 top-full mt-2 w-48 bg-slate-800 border border-white/10 rounded-2xl shadow-xl z-50 p-2 overflow-hidden"
-                      >
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="absolute right-0 top-full mt-2 w-48 bg-slate-800 border border-white/10 rounded-2xl shadow-xl z-50 p-2 overflow-hidden"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                         {[
                           { value: 'newest_import', label: '最新导入' },
                           { value: 'oldest_import', label: '最旧导入' },
@@ -518,19 +540,20 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                             {option.label}
                           </button>
                         ))}
-                      </motion.div>
-                    </>
+                    </motion.div>
                   )}
                 </AnimatePresence>
               </div>
 
               <div className="relative shrink-0">
                 <button 
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation();
                     if (!isFilterOpen) {
                       getAllTags().then(setAllTags);
                     }
                     setIsFilterOpen(!isFilterOpen);
+                    setIsSortOpen(false);
                   }}
                   className={`p-2 border rounded-xl transition ${selectedTags.length > 0 ? 'bg-purple-500/20 text-purple-400 border-purple-500/50' : 'bg-white/5 text-white/60 border-white/10 hover:text-white hover:bg-white/10'}`}
                 >
@@ -539,15 +562,13 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                 
                 <AnimatePresence>
                   {isFilterOpen && (
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={() => { setIsFilterOpen(false); setIsEditingTags(false); setEditingTagValue(null); }} />
-                      <motion.div
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 10 }}
-                        className="absolute right-0 top-full mt-2 w-72 bg-slate-800 border border-white/10 rounded-2xl shadow-xl z-50 p-4 max-h-[60vh] overflow-y-auto overscroll-contain touch-pan-y"
-                        onClick={(e) => e.stopPropagation()}
-                      >
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="absolute right-0 top-full mt-2 w-72 bg-slate-800 border border-white/10 rounded-2xl shadow-xl z-50 p-4 max-h-[60vh] overflow-y-auto overscroll-contain touch-pan-y"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                         <div className="flex items-center justify-between mb-3">
                           <h3 className="font-semibold text-white">按标签筛选</h3>
                           <div className="flex items-center gap-2">
@@ -669,8 +690,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                             })}
                           </div>
                         )}
-                      </motion.div>
-                    </>
+                    </motion.div>
                   )}
                 </AnimatePresence>
               </div>

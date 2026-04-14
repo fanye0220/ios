@@ -8,9 +8,10 @@ interface Props {
   onSelectFolder: (id: string | null) => void;
   onClose: () => void;
   onOpenSettings: () => void;
+  onFolderChanged?: () => void;
 }
 
-export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose, onOpenSettings }: Props) {
+export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose, onOpenSettings, onFolderChanged }: Props) {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [isEditing, setIsEditing] = useState(false);
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
@@ -58,6 +59,7 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose, onOpe
       setExpandedFolders(prev => new Set(prev).add(creatingParentId));
     }
     loadFolders();
+    onFolderChanged?.();
   };
 
   const handleUpdateFolder = async (folder: Folder) => {
@@ -69,6 +71,7 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose, onOpe
     setEditingFolderId(null);
     setEditName('');
     loadFolders();
+    onFolderChanged?.();
   };
 
   const handleDeleteFolder = async (id: string, name: string) => {
@@ -78,6 +81,7 @@ export function FolderSidebar({ selectedFolderId, onSelectFolder, onClose, onOpe
         onSelectFolder(null);
       }
       loadFolders();
+      onFolderChanged?.();
     }
   };
 

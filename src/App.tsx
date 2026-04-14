@@ -61,7 +61,7 @@ function TaggerWidget({ onClick }: { onClick: () => void }) {
             animate={{ opacity: 1, y: 0, x: '-50%' }}
             exit={{ opacity: 0, y: -50, x: '-50%' }}
             onClick={onClick}
-            className="fixed top-20 left-1/2 z-50 bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-2xl rounded-2xl p-4 cursor-pointer hover:bg-slate-700/90 transition-colors w-72"
+            className="fixed top-12 sm:top-20 left-1/2 z-50 bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-2xl rounded-2xl p-3 sm:p-4 cursor-pointer hover:bg-slate-700/90 transition-colors w-[90%] max-w-[16rem] sm:w-72"
           >
             <div className="flex items-center gap-3 mb-2">
               {isPaused ? (
@@ -162,6 +162,7 @@ export default function App() {
               onSelectFolder={setSelectedFolderId}
               onClose={() => setIsSidebarOpen(false)}
               onOpenSettings={() => setIsSettingsOpen(true)}
+              onFolderChanged={() => setRefreshKey(prev => prev + 1)}
             />
           </>
         )}
