@@ -14,7 +14,7 @@ export function MoveToFolderModal({ isOpen, onClose, onMove }: Props) {
 
   useEffect(() => {
     if (isOpen) {
-      getFolders().then(f => setFolders(f.sort((a, b) => b.createdAt - a.createdAt)));
+      getFolders().then(f => setFolders(f.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))));
     }
   }, [isOpen]);
 

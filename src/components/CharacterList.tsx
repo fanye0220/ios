@@ -393,7 +393,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
       const folder = allFolders.find(f => f.id === id);
       if (folder) {
         if (await isDescendant(id, targetFolderId)) {
-          alert(`无法将文件夹 "${folder.name}" 移动到其自身或其子文件夹中。`);
+          alert(`无法移动：您选中的文件夹中包含了目标文件夹 "${folder.name}"，不能将其移入自身。`);
           continue;
         }
         folder.parentId = targetFolderId;
