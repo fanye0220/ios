@@ -21,8 +21,8 @@ const TrashedCharacterCard = ({ char, onRestore, onHardDelete }: { key?: React.K
   const daysLeft = Math.ceil((7 * 24 * 60 * 60 * 1000 - (Date.now() - (char.deletedAt || 0))) / (1000 * 60 * 60 * 24));
 
   return (
-    <div className="flex items-center gap-4 p-4 bg-white/5 border border-white/10 rounded-2xl">
-      <div className="w-16 h-16 rounded-xl overflow-hidden shrink-0 bg-black/50">
+    <div className="flex items-center gap-4 p-4 bg-white/5 border border-white/10 rounded-2xl group transition-colors hover:bg-white/10">
+      <div className="w-16 h-16 rounded-xl overflow-hidden shrink-0 bg-black/50 shadow-lg ring-1 ring-white/10">
         <img 
           src={avatarUrl} 
           alt={char.name} 
@@ -30,26 +30,26 @@ const TrashedCharacterCard = ({ char, onRestore, onHardDelete }: { key?: React.K
         />
       </div>
       <div className="flex-1 min-w-0">
-        <h3 className="font-medium text-white truncate">{char.name}</h3>
-        <p className="text-xs text-red-400/80 mt-1 flex items-center gap-1">
-          <AlertTriangle className="w-3 h-3" />
-          {daysLeft} 天后永久删除
+        <h3 className="font-semibold text-white truncate text-base">{char.name}</h3>
+        <p className="text-xs text-red-400/80 mt-1 flex items-center gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">{daysLeft} 天后永久删除</span>
         </p>
       </div>
-      <div className="flex flex-col gap-2 shrink-0">
+      <div className="flex flex-row sm:flex-col gap-2.5 shrink-0">
         <button
           onClick={() => onRestore(char.id)}
-          className="p-2 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl transition"
+          className="p-3 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-xl transition-all active:scale-90 shadow-sm"
           title="恢复"
         >
-          <RotateCcw className="w-4 h-4" />
+          <RotateCcw className="w-5 h-5 sm:w-4.5 sm:h-4.5" />
         </button>
         <button
           onClick={() => onHardDelete(char.id)}
-          className="p-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl transition"
+          className="p-3 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl transition-all active:scale-90 shadow-sm"
           title="永久删除"
         >
-          <Trash2 className="w-4 h-4" />
+          <Trash2 className="w-5 h-5 sm:w-4.5 sm:h-4.5" />
         </button>
       </div>
     </div>
@@ -103,24 +103,24 @@ export function TrashBin({ onClose }: Props) {
       exit={{ opacity: 0, scale: 0.95 }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
     >
-      <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-3xl max-h-[80vh] flex flex-col shadow-2xl">
-        <div className="p-6 border-b border-white/10 flex items-center justify-between">
+      <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-3xl max-h-[88vh] flex flex-col shadow-2xl overflow-hidden">
+        <div className="p-5 sm:p-6 border-b border-white/10 flex items-center justify-between bg-white/[0.02] backdrop-blur-md">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-red-500/20 rounded-xl text-red-400">
+            <div className="p-2 bg-red-500/20 rounded-xl text-red-400 shrink-0">
               <Trash2 className="w-6 h-6" />
             </div>
-            <div>
-              <h2 className="text-xl font-bold text-white">回收站</h2>
-              <p className="text-sm text-white/50">已删除的角色将在此保留7天</p>
+            <div className="min-w-0">
+              <h2 className="text-xl font-bold text-white truncate">回收站</h2>
+              <p className="text-xs sm:text-sm text-white/50 truncate">已删除的角色将在此保留7天</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             {trashedCharacters.length > 0 && !loading && (
               <button
                 onClick={handleEmptyTrash}
-                className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl transition font-medium text-sm"
+                className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-xl transition font-semibold text-xs sm:text-sm whitespace-nowrap"
               >
-                清空回收站
+                清空列表
               </button>
             )}
             <button onClick={onClose} className="p-2 rounded-full hover:bg-white/10 transition text-white/60 hover:text-white">
