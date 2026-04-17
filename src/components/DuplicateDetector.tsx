@@ -234,13 +234,13 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {!loading && duplicateGroups.length > 0 && !selectionMode && (
               <button 
-                onClick={() => handleSelectDuplicates('newest')}
+                onClick={() => setSelectionMode(true)}
                 className="px-4 py-2 bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 rounded-xl text-sm font-bold transition active:scale-95 shadow-lg shadow-purple-500/10"
               >
-                批量选择
+                批量操作
               </button>
             )}
             {selectionMode && (
@@ -250,8 +250,8 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
                 className="px-4 py-2 bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 rounded-xl text-sm font-bold transition flex items-center gap-2 active:scale-95 shadow-lg shadow-red-500/30"
               >
                 <Trash2 className="w-4 h-4" />
-                <span className="hidden xs:inline">删除副本</span>
-                <span className="xs:hidden">删除</span>
+                <span className="hidden xs:inline text-sm">删除选中副本</span>
+                <span className="xs:hidden text-sm">删除</span>
               </button>
             )}
             {!selectionMode && (
@@ -266,15 +266,39 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
           <div className="sm:hidden grid grid-cols-2 border-b border-white/5 bg-slate-900 shadow-inner">
             <button 
               onClick={() => handleSelectDuplicates('newest')}
-              className="py-4 text-blue-400 active:bg-blue-400/10 text-sm font-bold transition border-r border-white/5"
+              className="py-4 text-blue-400 active:bg-blue-400/10 text-xs font-bold transition border-r border-white/5"
             >
-              保留最新
+              保留最新导入
             </button>
             <button 
               onClick={() => handleSelectDuplicates('earliest')}
-              className="py-4 text-purple-400 active:bg-purple-400/10 text-sm font-bold transition"
+              className="py-4 text-purple-400 active:bg-purple-400/10 text-xs font-bold transition"
             >
-              保留最早
+              保留最旧导入
+            </button>
+          </div>
+        )}
+        
+        {selectionMode && (
+          <div className="hidden sm:flex items-center gap-4 px-6 py-3 border-b border-white/5 bg-black/20">
+            <span className="text-xs text-white/40 font-medium">智能选择助手:</span>
+            <button 
+              onClick={() => handleSelectDuplicates('newest')}
+              className="px-3 py-1.5 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 rounded-lg text-xs font-bold transition"
+            >
+              保留最新导入
+            </button>
+            <button 
+              onClick={() => handleSelectDuplicates('earliest')}
+              className="px-3 py-1.5 bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 rounded-lg text-xs font-bold transition"
+            >
+              保留最旧导入
+            </button>
+            <button 
+              onClick={() => setSelectedIds(new Set())}
+              className="ml-auto px-3 py-1.5 text-white/40 hover:text-white/60 text-xs transition"
+            >
+              清空选择
             </button>
           </div>
         )}

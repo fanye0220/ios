@@ -46,6 +46,8 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState(true);
   const lastScrollY = useRef(0);
+  const filterRef = useRef<HTMLDivElement>(null);
+  const sortRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     localStorage.setItem('tavern_pageSize', pageSize.toString());
@@ -161,7 +163,10 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
   }, [page, pageSize, folderId, searchQuery, selectedTags, sortBy, refreshTrigger]);
 
   useEffect(() => {
-    const handleGlobalClick = () => {
+    const handleGlobalClick = (e: MouseEvent | TouchEvent) => {
+      if (filterRef.current && filterRef.current.contains(e.target as Node)) return;
+      if (sortRef.current && sortRef.current.contains(e.target as Node)) return;
+      
       setIsFilterOpen(false);
       setIsSortOpen(false);
       setIsEditingTags(false);
@@ -169,12 +174,12 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
     };
 
     if (isFilterOpen || isSortOpen) {
-      document.addEventListener('click', handleGlobalClick);
-      document.addEventListener('touchstart', handleGlobalClick);
+      document.addEventListener('mousedown', handleGlobalClick);
+      document.addEventListener('touchstart', handleGlobalClick, { passive: true });
     }
 
     return () => {
-      document.removeEventListener('click', handleGlobalClick);
+      document.removeEventListener('mousedown', handleGlobalClick);
       document.removeEventListener('touchstart', handleGlobalClick);
     };
   }, [isFilterOpen, isSortOpen]);
@@ -219,7 +224,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
   };
 
   const handleSelectAll = async () => {
-    const { characters: allChars } = await getCharacters(1, 100000, folderId, searchQuery, selectedTags, sortBy);
+    const { characters: allChars } = await getCharacters(1, 100000, folderId, searchQuery, selectedTags, sortBy, false);
     const totalItems = allChars.length + (!searchQuery && selectedTags.length === 0 ? folders.length : 0);
     
     if (selectedIds.size === totalItems) {
@@ -497,7 +502,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                 {viewMode === 'grid' ? <List className="w-5 h-5" /> : <LayoutGrid className="w-5 h-5" />}
               </button>
               
-              <div className="relative shrink-0">
+              <div ref={sortRef} className="relative shrink-0">
                 <button 
                   onClick={(e) => {
                     e.stopPropagation();
@@ -516,7 +521,6 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 10 }}
                       className="absolute right-0 top-full mt-2 w-48 bg-slate-800 border border-white/10 rounded-2xl shadow-xl z-50 p-2 overflow-hidden"
-                      onClick={(e) => e.stopPropagation()}
                     >
                         {[
                           { value: 'newest_import', label: '最新导入' },
@@ -540,12 +544,12 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                             {option.label}
                           </button>
                         ))}
-                    </motion.div>
+                      </motion.div>
                   )}
                 </AnimatePresence>
               </div>
 
-              <div className="relative shrink-0">
+              <div ref={filterRef} className="relative shrink-0">
                 <button 
                   onClick={(e) => {
                     e.stopPropagation();
@@ -567,7 +571,6 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 10 }}
                       className="absolute right-0 top-full mt-2 w-72 bg-slate-800 border border-white/10 rounded-2xl shadow-xl z-50 p-4 max-h-[60vh] overflow-y-auto overscroll-contain touch-pan-y"
-                      onClick={(e) => e.stopPropagation()}
                     >
                         <div className="flex items-center justify-between mb-3">
                           <h3 className="font-semibold text-white">按标签筛选</h3>
@@ -690,7 +693,7 @@ export function CharacterList({ folderId, onSelect, onImport, onSelectFolder, on
                             })}
                           </div>
                         )}
-                    </motion.div>
+                      </motion.div>
                   )}
                 </AnimatePresence>
               </div>
