@@ -331,13 +331,22 @@ export async function saveCharacters(characters: CharacterCard[]): Promise<void>
       character.updatedAt = Date.now();
     }
     
-    const blobs = {
+    let finalBlobs = {
       avatarBlob: character.avatarBlob,
       originalFile: character.originalFile,
       avatarHistory: character.avatarHistory
     };
+
+    if (existing?.hasBlobsSeparated) {
+      const existingBlobs = await blobStore.get(character.id);
+      if (existingBlobs) {
+        finalBlobs.avatarBlob = character.avatarBlob !== undefined ? character.avatarBlob : existingBlobs.avatarBlob;
+        finalBlobs.originalFile = character.originalFile !== undefined ? character.originalFile : existingBlobs.originalFile;
+        finalBlobs.avatarHistory = character.avatarHistory !== undefined ? character.avatarHistory : existingBlobs.avatarHistory;
+      }
+    }
     
-    await blobStore.put(blobs, character.id);
+    await blobStore.put(finalBlobs, character.id);
     
     const charToSave = { ...character, hasBlobsSeparated: true };
     delete charToSave.avatarBlob;
@@ -447,55 +456,66 @@ export async function findDuplicates(): Promise<DuplicateGroup[]> {
   const allCharacters = await db.getAll('characters');
   const activeCharacters = allCharacters.filter(c => !c.deletedAt);
   
+  // Precompute cleaned strings for faster O(N^2) matching
+  const precomputed = activeCharacters.map(char => {
+    const data = char.data?.data || char.data || {};
+    const firstMes = data.first_mes || '';
+    const desc = data.description || '';
+    const name = (char.name || data.name || '').trim().toLowerCase();
+    
+    return {
+      char,
+      id: char.id,
+      name,
+      firstMes,
+      desc,
+      descClean: desc.replace(/\s+/g, ''),
+      firstClean: firstMes.replace(/\s+/g, '')
+    };
+  });
+  
   const groups: CharacterCard[][] = [];
   const processedIds = new Set<string>();
   
-  for (let i = 0; i < activeCharacters.length; i++) {
-    const charA = activeCharacters[i];
-    if (processedIds.has(charA.id)) continue;
+  for (let i = 0; i < precomputed.length; i++) {
+    const itemA = precomputed[i];
+    if (processedIds.has(itemA.id)) continue;
     
-    const duplicates: CharacterCard[] = [charA];
+    const duplicates: CharacterCard[] = [itemA.char];
     
-    const aData = charA.data?.data || charA.data || {};
-    const aFirstMes = aData.first_mes || '';
-    const aDesc = aData.description || '';
-    const aName = (charA.name || aData.name || '').trim().toLowerCase();
-
-    for (let j = i + 1; j < activeCharacters.length; j++) {
-      const charB = activeCharacters[j];
-      if (processedIds.has(charB.id)) continue;
-      
-      const bData = charB.data?.data || charB.data || {};
-      const bFirstMes = bData.first_mes || '';
-      const bDesc = bData.description || '';
-      const bName = (charB.name || bData.name || '').trim().toLowerCase();
+    for (let j = i + 1; j < precomputed.length; j++) {
+      const itemB = precomputed[j];
+      if (processedIds.has(itemB.id)) continue;
       
       let isDup = false;
       
-      if (aName && bName && aName === bName) {
-        // Same name, check if they share content
-        if (aDesc === bDesc || aFirstMes === bFirstMes) {
+      if (itemA.name && itemB.name && itemA.name === itemB.name) {
+        // Same name: Check if major fields are identical (ignoring whitespace)
+        if (itemA.descClean && itemB.descClean && itemA.descClean === itemB.descClean) {
           isDup = true;
-        } else if (aDesc.length > 50 && bDesc.length > 50 && (aDesc.includes(bDesc.slice(0, 50)) || bDesc.includes(aDesc.slice(0, 50)))) {
+        } else if (itemA.firstClean && itemB.firstClean && itemA.firstClean === itemB.firstClean) {
           isDup = true;
-        } else if (aFirstMes.length > 50 && bFirstMes.length > 50 && (aFirstMes.includes(bFirstMes.slice(0, 50)) || bFirstMes.includes(aFirstMes.slice(0, 50)))) {
-          isDup = true;
-        } else if (aDesc.length < 50 && bDesc.length < 50) {
+        } else if (!itemA.descClean && !itemB.descClean && !itemA.firstClean && !itemB.firstClean) {
+          // Empty cards with same name
           isDup = true;
         }
       } else {
-        if (aDesc && bDesc && aDesc === bDesc && aDesc.length > 50) isDup = true;
-        else if (aFirstMes && bFirstMes && aFirstMes === bFirstMes && aFirstMes.length > 50) isDup = true;
+        // Different name: Only duplicate if BOTH description and first message are substantial and completely match
+        if (itemA.descClean && itemB.descClean && itemA.firstClean && itemB.firstClean && 
+            itemA.descClean === itemB.descClean && itemA.firstClean === itemB.firstClean && 
+            itemA.descClean.length > 50) {
+          isDup = true;
+        }
       }
       
       if (isDup) {
-        duplicates.push(charB);
-        processedIds.add(charB.id);
+        duplicates.push(itemB.char);
+        processedIds.add(itemB.id);
       }
     }
     
     if (duplicates.length > 1) {
-      processedIds.add(charA.id);
+      processedIds.add(itemA.id);
       groups.push(duplicates);
     }
   }
@@ -556,33 +576,33 @@ export async function findDuplicates(): Promise<DuplicateGroup[]> {
           }
         }
         if (isIdenticalToPrev) {
-          reasons.push('内容完全相同');
+          reasons.push('内容重复');
         } else {
-          reasons.push('内容基本相同');
+          reasons.push('基本相同');
         }
       } else {
         if (cFirst !== oFirst) {
-          if (cFirst.length > oFirst.length + 20) reasons.push('开场白更长');
-          else if (cFirst.length < oFirst.length - 20) reasons.push('开场白较短');
-          else reasons.push('开场白有修改');
+          if (cFirst.length > oFirst.length + 20) reasons.push('开场白长');
+          else if (cFirst.length < oFirst.length - 20) reasons.push('开场白短');
+          else reasons.push('改开场白');
         }
         if (cDesc !== oDesc) {
-          if (cDesc.length > oDesc.length + 50) reasons.push('设定更丰富');
-          else if (cDesc.length < oDesc.length - 50) reasons.push('设定较少');
-          else reasons.push('设定有修改');
+          if (cDesc.length > oDesc.length + 50) reasons.push('设定较长');
+          else if (cDesc.length < oDesc.length - 50) reasons.push('设定较短');
+          else reasons.push('改设定');
         }
-        if (cBook > oBook) reasons.push(`世界书更多(+${cBook - oBook})`);
-        else if (cBook < oBook) reasons.push(`世界书较少`);
+        if (cBook > oBook) reasons.push(`世界书+${cBook - oBook}`);
+        else if (cBook < oBook && cBook > 0) reasons.push(`世界书-${oBook - cBook}`);
         
-        if (cAlt > oAlt) reasons.push(`备用开场白更多(+${cAlt - oAlt})`);
+        if (cAlt > oAlt) reasons.push(`备用开场+${cAlt - oAlt}`);
         
         if (cMesExample !== oMesExample) {
-           if (cMesExample.length > oMesExample.length + 50) reasons.push('对话示例更多');
+           if (cMesExample.length > oMesExample.length + 50) reasons.push('示例较长');
         }
       }
       
       if (reasons.length === 0) {
-        reasons.push('细节有微调');
+        reasons.push('微调细节');
       }
       
       analyzedChars.push({ char: current, reason: reasons.join('，') });
