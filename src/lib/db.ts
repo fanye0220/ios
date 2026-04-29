@@ -22,6 +22,15 @@ export interface CharacterCard {
   hasBlobsSeparated?: boolean;
 }
 
+export interface ChatLog {
+  id: string;
+  characterId: string;
+  name: string;
+  messages: any[];
+  createdAt: number;
+  note?: string;
+}
+
 interface TavernDB extends DBSchema {
   characters: {
     key: string;
@@ -37,13 +46,34 @@ interface TavernDB extends DBSchema {
     key: string;
     value: { avatarBlob?: Blob; originalFile?: File; avatarHistory?: Blob[] };
   };
+  chats: {
+    key: string;
+    value: ChatLog;
+    indexes: { 'by-character': string; 'by-date': number };
+  };
+  memos: {
+    key: string;
+    value: CharacterMemo;
+    indexes: { 'by-character': string; 'by-date': number };
+  };
+}
+
+export interface CharacterMemo {
+  id: string;
+  characterId: string;
+  type: 'text' | 'image' | 'file';
+  content: string; // Markdown or File name
+  blob?: Blob;     // For images/files
+  createdAt: number;
+  isPinned?: boolean;
+  order?: number;
 }
 
 let dbPromise: Promise<IDBPDatabase<TavernDB>>;
 
 export function initDB() {
   if (!dbPromise) {
-    dbPromise = openDB<TavernDB>('tavern-manager-v2', 3, {
+    dbPromise = openDB<TavernDB>('tavern-manager-v2', 5, {
       upgrade(db, oldVersion, newVersion, transaction) {
         if (oldVersion < 1) {
           const store = db.createObjectStore('characters', { keyPath: 'id' });
@@ -58,6 +88,16 @@ export function initDB() {
         }
         if (oldVersion < 3) {
           db.createObjectStore('blobs');
+        }
+        if (oldVersion < 4) {
+          const chatStore = db.createObjectStore('chats', { keyPath: 'id' });
+          chatStore.createIndex('by-character', 'characterId');
+          chatStore.createIndex('by-date', 'createdAt');
+        }
+        if (oldVersion < 5) {
+          const memoStore = db.createObjectStore('memos', { keyPath: 'id' });
+          memoStore.createIndex('by-character', 'characterId');
+          memoStore.createIndex('by-date', 'createdAt');
         }
       },
     });
@@ -108,6 +148,35 @@ export async function migrateDatabase(onProgress?: (current: number, total: numb
 export async function getFolders(): Promise<Folder[]> {
   const db = await initDB();
   return db.getAllFromIndex('folders', 'by-date');
+}
+
+export async function getFolderPreviews(folderIds: string[]): Promise<Record<string, string[]>> {
+  if (folderIds.length === 0) return {};
+  const db = await initDB();
+  const tx = db.transaction('characters', 'readonly');
+  const index = tx.store.index('by-folder');
+  
+  const previews: Record<string, string[]> = {};
+  
+  await Promise.all(folderIds.map(async folderId => {
+    let chars = await index.getAll(folderId);
+    chars = chars.filter(c => !c.deletedAt);
+    chars.sort((a, b) => b.createdAt - a.createdAt);
+    const topChars = chars.slice(0, 4);
+    
+    // load blobs manually for these 4 characters if they are separated
+    const topBlobs = await Promise.all(topChars.map(async char => {
+      if (char.hasBlobsSeparated) {
+         const blobs = await db.get('blobs', char.id);
+         if (blobs?.avatarBlob) return URL.createObjectURL(blobs.avatarBlob);
+      }
+      return char.avatarBlob ? URL.createObjectURL(char.avatarBlob) : char.avatarUrlFallback || '';
+    }));
+    
+    previews[folderId] = topBlobs.filter(Boolean) as string[];
+  }));
+  
+  return previews;
 }
 
 export async function saveFolder(folder: Folder): Promise<void> {
@@ -174,6 +243,14 @@ export async function getCharacters(
   if (folderId && folderId !== 'all') {
     const index = store.index('by-folder');
     allCharacters = await index.getAll(folderId);
+  } else if (folderId === null && !searchQuery && tags.length === 0) {
+    // OPTIMIZATION: getting keys and filtering first avoids deserializing ALL characters
+    const index = store.index('by-folder');
+    const allKeys = await store.getAllKeys();
+    const folderKeys = await index.getAllKeys();
+    const folderKeySet = new Set(folderKeys);
+    const rootKeys = allKeys.filter(k => !folderKeySet.has(k));
+    allCharacters = await Promise.all(rootKeys.map(k => store.get(k))) as CharacterCard[];
   } else {
     allCharacters = await store.getAll();
   }
@@ -244,7 +321,10 @@ export async function getCharacters(
   return { characters, total };
 }
 
+let tagsCache: string[] | null = null;
+
 export async function getAllTags(): Promise<string[]> {
+  if (tagsCache) return tagsCache;
   const db = await initDB();
   const characters = await db.getAll('characters');
   const tags = new Set<string>();
@@ -255,10 +335,12 @@ export async function getAllTags(): Promise<string[]> {
       charTags.forEach((t: string) => tags.add(t));
     }
   });
-  return Array.from(tags).sort();
+  tagsCache = Array.from(tags).sort();
+  return tagsCache;
 }
 
 export async function renameTag(oldTag: string, newTag: string): Promise<void> {
+  tagsCache = null;
   const db = await initDB();
   const tx = db.transaction('characters', 'readwrite');
   const store = tx.store;
@@ -280,6 +362,7 @@ export async function renameTag(oldTag: string, newTag: string): Promise<void> {
 }
 
 export async function deleteTag(tagToDelete: string): Promise<void> {
+  tagsCache = null;
   const db = await initDB();
   const tx = db.transaction('characters', 'readwrite');
   const store = tx.store;
@@ -315,10 +398,12 @@ export async function getCharacter(id: string): Promise<CharacterCard | undefine
 }
 
 export async function saveCharacter(character: CharacterCard): Promise<void> {
+  tagsCache = null;
   return saveCharacters([character]);
 }
 
 export async function saveCharacters(characters: CharacterCard[]): Promise<void> {
+  tagsCache = null;
   if (characters.length === 0) return;
   const db = await initDB();
   const tx = db.transaction(['characters', 'blobs'], 'readwrite');
@@ -360,6 +445,7 @@ export async function saveCharacters(characters: CharacterCard[]): Promise<void>
 }
 
 export async function deleteCharacter(id: string): Promise<void> {
+  tagsCache = null;
   const db = await initDB();
   const char = await db.get('characters', id);
   if (char) {
@@ -616,3 +702,45 @@ export async function findDuplicates(): Promise<DuplicateGroup[]> {
   
   return finalGroups;
 }
+
+export async function getChatsForCharacter(characterId: string): Promise<ChatLog[]> {
+  const db = await initDB();
+  return db.getAllFromIndex('chats', 'by-character', characterId);
+}
+
+export async function getAllChats(): Promise<ChatLog[]> {
+  const db = await initDB();
+  return db.getAll('chats');
+}
+
+export async function saveChat(chat: ChatLog): Promise<void> {
+  const db = await initDB();
+  await db.put('chats', chat);
+}
+
+export async function deleteChat(id: string): Promise<void> {
+  const db = await initDB();
+  await db.delete('chats', id);
+}
+
+export async function getMemosForCharacter(characterId: string): Promise<CharacterMemo[]> {
+  const db = await initDB();
+  const memos = await db.getAllFromIndex('memos', 'by-character', characterId);
+  return memos.sort((a, b) => {
+    if (a.isPinned && !b.isPinned) return -1;
+    if (!a.isPinned && b.isPinned) return 1;
+    if (a.order !== undefined && b.order !== undefined) return a.order - b.order;
+    return b.createdAt - a.createdAt;
+  }); // Pinned first, then ordered, then newest first
+}
+
+export async function saveMemo(memo: CharacterMemo): Promise<void> {
+  const db = await initDB();
+  await db.put('memos', memo);
+}
+
+export async function deleteMemo(id: string): Promise<void> {
+  const db = await initDB();
+  await db.delete('memos', id);
+}
+

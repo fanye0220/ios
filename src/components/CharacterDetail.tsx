@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, FileJson, ChevronRight, Plus, Edit2, Power, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Check, Upload } from 'lucide-react';
+import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, StickyNote, ChevronRight, Plus, Edit2, Power, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Check, Upload } from 'lucide-react';
 import { getCharacter, deleteCharacter, saveCharacter, CharacterCard, getFolders } from '../lib/db';
 import { parseTavernCard } from '../types/tavern';
 import { injectTavernData } from '../lib/png';
 import { AvatarViewer } from './AvatarViewer';
 import { QuickRepliesSection } from './QuickRepliesSection';
+import { CharacterChatsSection } from './CharacterChatsSection';
+import { CharacterMemosSection } from './CharacterMemosSection';
 import JSZip from 'jszip';
 
 interface Props {
@@ -15,7 +17,7 @@ interface Props {
 
 export function CharacterDetail({ id, onBack }: Props) {
   const [character, setCharacter] = useState<CharacterCard | null>(null);
-  const [activeTab, setActiveTab] = useState<'profile' | 'greetings' | 'worldbook'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'greetings' | 'worldbook' | 'chats' | 'memos'>('profile');
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showExportAlert, setShowExportAlert] = useState(false);
@@ -333,7 +335,7 @@ export function CharacterDetail({ id, onBack }: Props) {
                     setEditNameValue(character.name);
                   }
                 }}
-                className="bg-black/40 border border-white/20 rounded-lg px-3 py-1 text-2xl font-bold text-center w-48 focus:outline-none focus:border-purple-500"
+                className="bg-black/40 border border-white/20 rounded-lg px-3 py-1 text-xl sm:text-2xl font-bold text-center w-full max-w-[200px] focus:outline-none focus:border-purple-500"
                 autoFocus
               />
               <button 
@@ -353,11 +355,11 @@ export function CharacterDetail({ id, onBack }: Props) {
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-2 mt-4">
-              <h1 className="text-3xl font-bold text-center">{character.name}</h1>
+            <div className="flex items-center justify-center gap-2 mt-4 w-full px-4">
+              <h1 className="text-2xl sm:text-3xl font-bold text-center break-words max-w-full">{character.name}</h1>
               <button 
                 onClick={() => setIsEditingName(true)}
-                className="p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-lg transition"
+                className="p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-lg transition shrink-0"
               >
                 <Edit2 className="w-4 h-4" />
               </button>
@@ -595,7 +597,7 @@ export function CharacterDetail({ id, onBack }: Props) {
         </div>
 
         {/* Tabs */}
-        <div className="flex px-4 gap-2 mb-4 overflow-x-auto hide-scrollbar">
+        <div className="flex px-4 gap-2 py-3 mb-2 overflow-x-auto hide-scrollbar sticky top-16 z-20">
           {[
             ...(!isStandaloneWorldbook ? [
               { id: 'profile', icon: User, label: isPreset ? '预设条目' : '档案' },
@@ -605,6 +607,12 @@ export function CharacterDetail({ id, onBack }: Props) {
             ] : []),
             ...(!isPreset ? [
               { id: 'worldbook', icon: Book, label: '世界书' },
+            ] : []),
+            ...(!isPreset && !isStandaloneWorldbook ? [
+              { id: 'chats', icon: MessageSquare, label: '聊天记录' },
+            ] : []),
+            ...(!isPreset && !isStandaloneWorldbook ? [
+              { id: 'memos', icon: StickyNote, label: '备忘录' },
             ] : []),
           ].map((tab) => (
             <button
@@ -623,8 +631,8 @@ export function CharacterDetail({ id, onBack }: Props) {
         </div>
 
         {/* Content Area - Glassmorphism Card */}
-        <div className="flex-1 px-4 pb-8">
-          <div className="bg-black/40 backdrop-blur-2xl border border-white/10 rounded-3xl p-6 shadow-2xl min-h-[50vh]">
+        <div className="flex-1 px-2 sm:px-4 pb-32">
+          <div className="bg-black/40 backdrop-blur-2xl border border-white/10 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-2xl min-h-[50vh]">
             <AnimatePresence mode="wait">
               {activeTab === 'profile' && (
                 <motion.div
@@ -869,6 +877,19 @@ export function CharacterDetail({ id, onBack }: Props) {
                     </div>
                   )}
                 </motion.div>
+              )}
+
+              {activeTab === 'chats' && character && (
+                <CharacterChatsSection 
+                   characterId={character.id} 
+                   characterName={character.name} 
+                   regexScripts={(character.data?.data?.extensions || character.data?.extensions || {}).regex_scripts || []} 
+                   avatar={avatarUrl}
+                />
+              )}
+
+              {activeTab === 'memos' && character && (
+                <CharacterMemosSection characterId={character.id} />
               )}
             </AnimatePresence>
           </div>
