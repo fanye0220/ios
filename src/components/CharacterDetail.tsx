@@ -4,6 +4,7 @@ import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, StickyNote, Che
 import { getCharacter, deleteCharacter, saveCharacter, CharacterCard, getFolders } from '../lib/db';
 import { parseTavernCard } from '../types/tavern';
 import { injectTavernData } from '../lib/png';
+import { normalizeWorldbookEntries } from '../lib/worldbook';
 import { AvatarViewer } from './AvatarViewer';
 import { QuickRepliesSection } from './QuickRepliesSection';
 import { CharacterChatsSection } from './CharacterChatsSection';
@@ -184,8 +185,30 @@ export function CharacterDetail({ id, onBack }: Props) {
     return name.replace(/[\\/:*?"<>|]/g, '_') || 'character';
   };
 
+  const getNormalizedExportData = () => {
+    const exportData = JSON.parse(JSON.stringify(character.data));
+    if (exportData.entries) {
+      exportData.entries = normalizeWorldbookEntries(exportData.entries);
+    } else if (exportData.data && exportData.data.entries) {
+      exportData.data.entries = normalizeWorldbookEntries(exportData.data.entries);
+    }
+    if (exportData.character_book && exportData.character_book.entries) {
+      exportData.character_book.entries = normalizeWorldbookEntries(exportData.character_book.entries);
+    }
+    if (exportData.data?.character_book?.entries) {
+      exportData.data.character_book.entries = normalizeWorldbookEntries(exportData.data.character_book.entries);
+    }
+    if (exportData.extensions?.character_book?.entries) {
+      exportData.extensions.character_book.entries = normalizeWorldbookEntries(exportData.extensions.character_book.entries);
+    }
+    if (exportData.data?.extensions?.character_book?.entries) {
+      exportData.data.extensions.character_book.entries = normalizeWorldbookEntries(exportData.data.extensions.character_book.entries);
+    }
+    return exportData;
+  };
+
   const handleExportJson = () => {
-    const blob = new Blob([JSON.stringify(character.data, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify(getNormalizedExportData(), null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -208,7 +231,7 @@ export function CharacterDetail({ id, onBack }: Props) {
     if (baseBlob) {
       try {
         const buffer = await baseBlob.arrayBuffer();
-        const newBuffer = injectTavernData(buffer, character.data);
+        const newBuffer = injectTavernData(buffer, getNormalizedExportData());
         const blob = new Blob([newBuffer], { type: 'image/png' });
         
         const safeName = getSafeFilename(character.name);
@@ -251,7 +274,7 @@ export function CharacterDetail({ id, onBack }: Props) {
       
       <div className="relative z-10 min-h-screen flex flex-col">
         {/* Header */}
-        <header className="sticky top-0 p-4 flex items-center justify-between bg-black/20 backdrop-blur-xl border-b border-white/10 z-20">
+        <header className="sticky top-0 p-4 pt-7 sm:pt-7 flex items-center justify-between bg-black/20 backdrop-blur-xl border-b border-white/10 z-20">
           <button onClick={handleBack} className="p-2 rounded-full hover:bg-white/10 transition">
             <ArrowLeft className="w-6 h-6" />
           </button>
@@ -836,18 +859,20 @@ export function CharacterDetail({ id, onBack }: Props) {
                                 if (Array.isArray(json.entries)) {
                                   entries = json.entries;
                                 } else if (json.entries && typeof json.entries === 'object') {
-                                  entries = json.entries; // Keep as object!
+                                  entries = Array.isArray(json.entries) ? json.entries : (json.entries ? Object.values(json.entries) : []);
                                 } else if (Array.isArray(json)) {
                                   entries = json;
                                 } else if (json.data && json.data.entries) {
                                   // Handle Tavern V3 Worldbook format
-                                  entries = json.data.entries;
+                                  entries = Array.isArray(json.data.entries) ? json.data.entries : Object.values(json.data.entries);
                                   isV3 = true;
                                 }
 
+                                entries = normalizeWorldbookEntries(entries);
+
                                 let newBook;
                                 if (isV3) {
-                                  newBook = json; // Keep the whole V3 structure
+                                  newBook = { ...json, data: { ...json.data, entries: entries } };
                                 } else {
                                   newBook = { 
                                     name: json.name || file.name.replace('.json', ''), 
@@ -945,7 +970,7 @@ function FullScreenTextModal({
       exit={{ opacity: 0, y: 50 }}
       className="fixed inset-0 z-[100] bg-slate-900 flex flex-col"
     >
-      <header className="sticky top-0 p-4 flex items-center gap-3 bg-slate-900/90 backdrop-blur-xl border-b border-white/10 z-20">
+      <header className="sticky top-0 p-4 pt-7 sm:pt-7 flex items-center gap-3 bg-slate-900/90 backdrop-blur-xl border-b border-white/10 z-20">
         <button onClick={onClose} className="p-2 rounded-full hover:bg-white/10 transition">
           <ArrowLeft className="w-6 h-6" />
         </button>
@@ -1118,22 +1143,13 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
     entries = Array.isArray(book.data.entries) ? book.data.entries : Object.values(book.data.entries);
   }
 
-  // Helper to save entries in the format Tavern expects (object with string indices)
+  // Helper to save entries in the format Tavern expects
   const saveEntries = (newEntriesArray: any[]) => {
     if (book.data && book.data.entries) {
       // V3 format
       onUpdate({ ...book, data: { ...book.data, entries: newEntriesArray } });
     } else {
-      const isOriginallyObject = !Array.isArray(book.entries);
-      if (isOriginallyObject) {
-        const entriesObj: Record<string, any> = {};
-        newEntriesArray.forEach((entry, idx) => {
-          entriesObj[String(idx)] = { ...entry, uid: entry.uid !== undefined ? entry.uid : idx };
-        });
-        onUpdate({ ...book, entries: entriesObj });
-      } else {
-        onUpdate({ ...book, entries: newEntriesArray });
-      }
+      onUpdate({ ...book, entries: newEntriesArray });
     }
   };
 
@@ -1213,78 +1229,89 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
     saveEntries(newEntries);
   };
 
-  if (editingIndex !== null) {
+  const renderEditForm = () => {
+    if (editingIndex === null) return null;
     return (
-      <div className="space-y-4 bg-white/5 p-4 rounded-xl border border-white/10">
-        <div className="flex justify-between items-center mb-2">
-          <h3 className="text-lg font-semibold">{editingIndex === -1 ? '新增世界书条目' : '编辑世界书条目'}</h3>
-          <button onClick={() => setEditingIndex(null)} className="p-1 hover:bg-white/10 rounded-full">
-            <XIcon className="w-5 h-5" />
-          </button>
-        </div>
-        
-        <div>
-          <label className="block text-xs text-white/60 mb-1">标题 / 备注 (Comment)</label>
-          <input 
-            type="text" 
-            value={editForm.comment || editForm.name || ''} 
-            onChange={e => setEditForm({...editForm, comment: e.target.value})}
-            className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
-            placeholder="例如: 角色背景、设定1"
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs text-white/60 mb-1">关键词 (用逗号分隔)</label>
-          <input 
-            type="text" 
-            value={editForm.keys} 
-            onChange={e => setEditForm({...editForm, keys: e.target.value})}
-            className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
-            placeholder="例如: 酒馆, 老板, 饮料"
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs text-white/60 mb-1">内容</label>
-          <textarea 
-            value={editForm.content} 
-            onChange={e => setEditForm({...editForm, content: e.target.value})}
-            className="w-full h-32 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500 resize-none"
-            placeholder="条目内容..."
-          />
-        </div>
-
-        <div className="flex gap-4">
-          <div className="flex-1">
-            <label className="block text-xs text-white/60 mb-1">插入顺序 (Insertion Order)</label>
-            <input 
-              type="number" 
-              value={editForm.insertion_order} 
-              onChange={e => setEditForm({...editForm, insertion_order: e.target.value})}
-              className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
-            />
+      <div className="fixed inset-0 z-[110] bg-slate-900 sm:bg-black/80 sm:backdrop-blur-sm flex flex-col sm:items-center sm:justify-center sm:p-6" onClick={() => setEditingIndex(null)}>
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 20 }}
+          className="bg-slate-900 flex flex-col w-full h-full sm:h-auto sm:border border-white/10 sm:rounded-2xl shadow-2xl sm:max-w-2xl sm:max-h-[85vh] overflow-hidden"
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="flex-none p-4 sm:p-6 border-b border-white/10 flex items-center justify-between bg-black/20">
+            <h3 className="text-lg font-semibold">{editingIndex === -1 ? '新增世界书条目' : '编辑世界书条目'}</h3>
+            <button onClick={() => setEditingIndex(null)} className="p-1 hover:bg-white/10 rounded-full">
+              <XIcon className="w-5 h-5" />
+            </button>
           </div>
-          <div className="flex items-end pb-2">
-            <label className="flex items-center gap-2 cursor-pointer">
+          
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-slate-900 flex flex-col gap-4">
+            <div>
+              <label className="block text-xs text-white/60 mb-1">标题 / 备注 (Comment)</label>
               <input 
-                type="checkbox" 
-                checked={editForm.enabled} 
-                onChange={e => setEditForm({...editForm, enabled: e.target.checked})}
-                className="rounded border-white/10 bg-black/40 text-purple-500 focus:ring-purple-500"
+                type="text" 
+                value={editForm.comment || editForm.name || ''} 
+                onChange={e => setEditForm({...editForm, comment: e.target.value})}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+                placeholder="例如: 角色背景、设定1"
               />
-              <span className="text-sm">启用 (Enabled)</span>
-            </label>
-          </div>
-        </div>
+            </div>
 
-        <div className="flex justify-end gap-2 mt-4">
-          <button onClick={() => setEditingIndex(null)} className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition">取消</button>
-          <button onClick={handleSave} className="px-4 py-2 rounded-lg bg-purple-500 hover:bg-purple-600 text-white text-sm transition">保存</button>
-        </div>
+            <div>
+              <label className="block text-xs text-white/60 mb-1">关键词 (用逗号分隔)</label>
+              <input 
+                type="text" 
+                value={editForm.keys} 
+                onChange={e => setEditForm({...editForm, keys: e.target.value})}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+                placeholder="例如: 酒馆, 老板, 饮料"
+              />
+            </div>
+
+            <div className="flex-1 flex flex-col min-h-0">
+              <label className="block text-xs text-white/60 mb-1">内容</label>
+              <textarea 
+                value={editForm.content} 
+                onChange={e => setEditForm({...editForm, content: e.target.value})}
+                className="w-full flex-1 min-h-[150px] bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500 resize-none"
+                placeholder="条目内容..."
+              />
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-4">
+              <div className="flex-1">
+                <label className="block text-xs text-white/60 mb-1">插入顺序 (Insertion Order)</label>
+                <input 
+                  type="number" 
+                  value={editForm.insertion_order} 
+                  onChange={e => setEditForm({...editForm, insertion_order: e.target.value})}
+                  className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+                />
+              </div>
+              <div className="flex items-end pb-1">
+                <label className="flex items-center gap-2 cursor-pointer bg-white/5 py-2 px-4 rounded-lg border border-white/10 w-full sm:w-auto">
+                  <input 
+                    type="checkbox" 
+                    checked={editForm.enabled} 
+                    onChange={e => setEditForm({...editForm, enabled: e.target.checked})}
+                    className="rounded border-white/10 bg-black/40 text-purple-500 focus:ring-purple-500"
+                  />
+                  <span className="text-sm">启用 (Enabled)</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-none p-4 sm:p-6 border-t border-white/10 flex justify-end gap-2 bg-black/20">
+            <button onClick={() => setEditingIndex(null)} className="px-5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-sm transition">取消</button>
+            <button onClick={handleSave} className="px-5 py-2.5 rounded-xl bg-purple-500 hover:bg-purple-600 shadow-lg shadow-purple-500/20 text-white text-sm transition font-medium">保存</button>
+          </div>
+        </motion.div>
       </div>
     );
-  }
+  };
 
   return (
     <div className="space-y-6">
@@ -1300,7 +1327,14 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
               // If it's an embedded worldbook and entries is an array, convert to object for standalone export
               if (Array.isArray(book.entries)) {
                 exportData = { ...book, entries: {} };
-                book.entries.forEach((e: any, i: number) => {
+                const normalizedEntries = normalizeWorldbookEntries(book.entries);
+                normalizedEntries.forEach((e: any, i: number) => {
+                  exportData.entries[String(i)] = { ...e, uid: e.uid !== undefined ? e.uid : i };
+                });
+              } else if (book.entries && typeof book.entries === 'object') {
+                exportData = { ...book, entries: {} };
+                const normalizedEntries = normalizeWorldbookEntries(book.entries);
+                normalizedEntries.forEach((e: any, i: number) => {
                   exportData.entries[String(i)] = { ...e, uid: e.uid !== undefined ? e.uid : i };
                 });
               }
@@ -1424,6 +1458,9 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
             onClose={() => setViewingEntryIndex(null)} 
           />
         )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {renderEditForm()}
       </AnimatePresence>
     </div>
   );

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { X, Upload, Check, Trash2, Download } from 'lucide-react';
 import { CharacterCard, saveCharacter } from '../lib/db';
 
@@ -101,12 +102,7 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
     }
     
     // Inject current character data into the new PNG so it becomes a valid Tavern card
-    let finalFile: File;
-    if (file instanceof File) {
-      finalFile = file;
-    } else {
-      finalFile = new File([file], file.name || 'avatar.png', { type: file.type });
-    }
+    let finalFile: File = file;
     
     try {
       let pngBlob: Blob = file;
@@ -219,7 +215,7 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-[60] bg-black flex flex-col"
     >
-      <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-10 bg-gradient-to-b from-black/60 to-transparent">
+      <div className="absolute top-0 left-0 right-0 p-4 pt-7 sm:pt-7 flex justify-between items-center z-10 bg-gradient-to-b from-black/60 to-transparent">
         <button onClick={onClose} className="p-2 rounded-full bg-black/40 text-white hover:bg-black/60 transition">
           <X className="w-6 h-6" />
         </button>
@@ -247,15 +243,25 @@ export function AvatarViewer({ character, onClose, onUpdate }: Props) {
       </div>
 
       <div className="flex-1 relative flex flex-col items-center justify-center overflow-hidden">
-        <motion.img
-          key={currentAvatarUrl}
-          initial={{ scale: 0.9, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-          src={currentAvatarUrl}
-          alt="Current Avatar"
-          className="max-w-full max-h-full object-contain"
-        />
+        <TransformWrapper
+          initialScale={1}
+          minScale={0.5}
+          maxScale={5}
+          centerOnInit
+        >
+          <TransformComponent wrapperClass="w-full h-full flex items-center justify-center p-4" wrapperStyle={{ width: '100%', height: '100%' }}>
+            <motion.img
+              key={currentAvatarUrl}
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+              src={currentAvatarUrl}
+              alt="Current Avatar"
+              draggable={false}
+              className="max-w-full max-h-full object-contain cursor-grab active:cursor-grabbing"
+            />
+          </TransformComponent>
+        </TransformWrapper>
         <AnimatePresence>
           {previewBlob && previewBlob !== character.avatarBlob && (
             <motion.div

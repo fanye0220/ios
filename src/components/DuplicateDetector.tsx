@@ -31,8 +31,10 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
       const isStandaloneWorldbook = rawData.entries !== undefined;
       const isTheme = rawData.blur_strength !== undefined || rawData.main_text_color !== undefined || rawData.chat_display !== undefined;
       const tags = c.data?.tags || c.data?.data?.tags || [];
-      const isBeautify = tags.some((t: string) => t.includes('美化') || t.includes('预设') || t.includes('UI') || t.includes('主题'));
-      return !isPreset && !isBeautify && !isStandaloneWorldbook && !isTheme;
+      const isBeautify = tags.some((t: string) => t.includes('美化') || t.includes('预设') || t.includes('UI') || t.includes('主题') || t.includes('工具') || t.includes('插件') || t.includes('正则') || t.includes('组件') || t.includes('工作流'));
+      const isQR = Array.isArray(rawData) ? rawData.length > 0 && rawData[0].label !== undefined : (rawData.quick_replies !== undefined || rawData.qrList !== undefined);
+      const isScript = rawData.type === 'script' && rawData.content !== undefined && rawData.name !== undefined;
+      return !isPreset && !isBeautify && !isStandaloneWorldbook && !isTheme && !isQR && !isScript;
     });
 
     setDuplicateGroups(filteredGroups);
@@ -58,6 +60,7 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
     if (!targetData.extensions) targetData.extensions = {};
 
     let mergedQRs = [...(targetData.extensions.quick_replies || [])];
+    let mergedQRSets = [...(targetData.extensions.tavern_qr_sets || [])];
     let mergedSource = targetData.extensions.source || targetData.source || '';
     let mergedTags = [...(targetData.tags || [])];
     let mergedQrFilename = targetData.extensions.qr_filename || '';
@@ -71,6 +74,13 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
       const otherTarget = other.data.data ? other.data.data : other.data;
       
       // Merge QRs
+      const otherQRSets = otherTarget.extensions?.tavern_qr_sets || [];
+      for (const qrSet of otherQRSets) {
+        if (!mergedQRSets.some(s => s.id === qrSet.id || s.sourceName === qrSet.sourceName)) {
+          mergedQRSets.push(qrSet);
+        }
+      }
+
       const otherQRs = otherTarget.extensions?.quick_replies || [];
       for (const qr of otherQRs) {
         if (!mergedQRs.some(q => q.message === qr.message)) {
@@ -115,6 +125,7 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
     }
 
     targetData.extensions.quick_replies = mergedQRs;
+    targetData.extensions.tavern_qr_sets = mergedQRSets;
     targetData.extensions.source = mergedSource;
     targetData.tags = mergedTags;
     if (mergedQrFilename) {
@@ -180,14 +191,9 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
         const kWorldbook = JSON.stringify(kData.character_book?.entries || kData.extensions?.character_book?.entries || []);
         const sameWorldbook = cWorldbook === kWorldbook;
         
-        const hasSpecificQR = (cData.extensions?.quick_replies?.length || 0) > 0;
-        const cQR = JSON.stringify(cData.extensions?.quick_replies || []);
-        const kQR = JSON.stringify(kData.extensions?.quick_replies || []);
-        const sameQR = cQR === kQR;
-        
         const isExactlySameData = sameName && sameDesc && sameFirst && samePersonality && sameScenario && sameMesExample;
         
-        if (isExactlySameData && sameWorldbook && (!hasSpecificQR || sameQR)) {
+        if (isExactlySameData && sameWorldbook) {
            newSet.add(c.id);
         }
       }
@@ -234,7 +240,7 @@ export function DuplicateDetector({ onClose, onSelectChar }: Props) {
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-2 pt-10 sm:p-4 sm:pt-10 bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2 pt-7 sm:p-4 sm:pt-7 bg-black/60 backdrop-blur-sm"
     >
       <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-4xl max-h-[92vh] sm:max-h-[85vh] flex flex-col shadow-2xl overflow-hidden ring-1 ring-white/10">
         <div className="p-5 sm:p-6 border-b border-white/10 flex items-center justify-between bg-white/[0.02] backdrop-blur-md">
