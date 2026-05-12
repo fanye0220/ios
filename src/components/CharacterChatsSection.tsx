@@ -69,32 +69,74 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
       try {
-        const text = await file.text();
-        let parsedMessages: any[] = [];
-
-        if (file.name.endsWith('.jsonl') || text.trim().split('\n').length > 1) {
-          const lines = text.trim().split('\n');
-          parsedMessages = lines.map(line => {
-            try { return JSON.parse(line); } catch (e) { return null; }
-          }).filter(Boolean);
+        if (file.name.toLowerCase().endsWith('.zip')) {
+          const { default: JSZip } = await import('jszip');
+          const zip = new JSZip();
+          const loadedZip = await zip.loadAsync(file);
+          
+          for (const relativePath in loadedZip.files) {
+            const zipEntry = loadedZip.files[relativePath];
+            if (zipEntry.dir) continue;
+            
+            const lowerName = zipEntry.name.toLowerCase();
+            if (lowerName.endsWith('.json') || lowerName.endsWith('.jsonl')) {
+              try {
+                const text = await zipEntry.async('text');
+                let parsedMessages: any[] = [];
+                
+                if (lowerName.endsWith('.jsonl') || text.trim().split('\n').length > 1) {
+                  const lines = text.trim().split('\n');
+                  parsedMessages = lines.map(line => {
+                    try { return JSON.parse(line); } catch (e) { return null; }
+                  }).filter(Boolean);
+                } else {
+                  const data = JSON.parse(text);
+                  if (Array.isArray(data)) parsedMessages = data;
+                  else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
+                  else parsedMessages = [data];
+                }
+                
+                await saveChat({
+                  id: crypto.randomUUID(),
+                  characterId: characterId,
+                  name: zipEntry.name.split('/').pop() || zipEntry.name,
+                  messages: parsedMessages,
+                  createdAt: Date.now()
+                });
+                imported++;
+              } catch (e) {
+                console.error(`Failed to parse file inside zip: ${zipEntry.name}`, e);
+              }
+            }
+          }
         } else {
-          const data = JSON.parse(text);
-          if (Array.isArray(data)) parsedMessages = data;
-          else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
-          else parsedMessages = [data];
-        }
+          const text = await file.text();
+          let parsedMessages: any[] = [];
 
-        await saveChat({
-          id: crypto.randomUUID(),
-          characterId: characterId,
-          name: file.name,
-          messages: parsedMessages,
-          createdAt: Date.now()
-        });
-        imported++;
+          if (file.name.toLowerCase().endsWith('.jsonl') || text.trim().split('\n').length > 1) {
+            const lines = text.trim().split('\n');
+            parsedMessages = lines.map(line => {
+              try { return JSON.parse(line); } catch (e) { return null; }
+            }).filter(Boolean);
+          } else {
+            const data = JSON.parse(text);
+            if (Array.isArray(data)) parsedMessages = data;
+            else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
+            else parsedMessages = [data];
+          }
+
+          await saveChat({
+            id: crypto.randomUUID(),
+            characterId: characterId,
+            name: file.name,
+            messages: parsedMessages,
+            createdAt: Date.now()
+          });
+          imported++;
+        }
       } catch (e) {
         console.error(e);
-        alert(`解析文件 ${file.name} 失败，请确保格式为记录导出的 jsonl 或 json 格式。`);
+        alert(`解析文件 ${file.name} 失败，请确保格式为记录导出的 zip, jsonl 或 json 格式。`);
       }
     }
 
@@ -134,13 +176,13 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
 
     // Format tags
     // Format <Think>
-    result = result.replace(/(?:<|&lt;)Think(?:>|&gt;)([\s\S]*?)(?:<|&lt;)\/Think(?:>|&gt;)/gi, '<details class="text-sm bg-white/5 border border-white/10 rounded-lg p-2 my-2"><summary class="cursor-pointer font-bold text-gray-400 select-none">🤔 思维链</summary><div class="mt-2 text-gray-300">$1</div></details>');
+    result = result.replace(/(?:<|&lt;)Think(?:>|&gt;)([\s\S]*?)(?:<|&lt;)\/Think(?:>|&gt;)/gi, '<details class="text-sm bg-white/5 border border-white/10 rounded-lg p-2 my-2 w-full max-w-full overflow-hidden"><summary class="cursor-pointer font-bold text-gray-400 select-none">🤔 思维链</summary><div class="mt-2 text-gray-300 break-words whitespace-pre-wrap max-w-full overflow-x-auto">$1</div></details>');
     
     // Format doggy_status_panel
-    result = result.replace(/(?:<|&lt;)doggy_status_panel(?:>|&gt;)([\s\S]*?)(?:<|&lt;)\/doggy_status_panel(?:>|&gt;)/gi, '<details class="text-sm bg-blue-500/10 border border-blue-500/20 rounded-lg p-2 my-2"><summary class="cursor-pointer font-bold text-blue-400 select-none">📊 状态栏</summary><pre class="mt-2 text-blue-300/80 whitespace-pre-wrap font-mono text-xs overflow-x-auto">$1</pre></details>');
+    result = result.replace(/(?:<|&lt;)doggy_status_panel(?:>|&gt;)([\s\S]*?)(?:<|&lt;)\/doggy_status_panel(?:>|&gt;)/gi, '<details class="text-sm bg-blue-500/10 border border-blue-500/20 rounded-lg p-2 my-2 w-full max-w-full overflow-hidden"><summary class="cursor-pointer font-bold text-blue-400 select-none">📊 状态栏</summary><pre class="mt-2 text-blue-300/80 whitespace-pre-wrap font-mono text-xs overflow-x-auto break-words max-w-full">$1</pre></details>');
 
     // Also deal with standalone {状态栏 | ...} without xml tags
-    result = result.replace(/\{状态栏\s*\|([\s\S]*?)\}/gi, '<details class="text-sm bg-blue-500/10 border border-blue-500/20 rounded-lg p-2 my-2"><summary class="cursor-pointer font-bold text-blue-400 select-none">📊 状态栏</summary><pre class="mt-2 text-blue-300/80 whitespace-pre-wrap font-mono text-xs overflow-x-auto">$1</pre></details>');
+    result = result.replace(/\{状态栏\s*\|([\s\S]*?)\}/gi, '<details class="text-sm bg-blue-500/10 border border-blue-500/20 rounded-lg p-2 my-2 w-full max-w-full overflow-hidden"><summary class="cursor-pointer font-bold text-blue-400 select-none">📊 状态栏</summary><pre class="mt-2 text-blue-300/80 whitespace-pre-wrap font-mono text-xs overflow-x-auto break-words max-w-full">$1</pre></details>');
 
     // Apply user defined custom tags
     const processedTags = new Set(customTags.map(t => t.replace(/^<*\/?|\/?>*$/g, '').trim()).filter(Boolean));
@@ -151,7 +193,7 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
       
       // Match paired tags with optional attributes. Handle both < and &lt;
       const pairedRe = new RegExp(`(?:<|&lt;)\\s*${escapedTag}(?:\\s+(?:[^>&]|&[^g])+)?(?:>|&gt;)([\\s\\S]*?)(?:<|&lt;)\\/\\s*${escapedTag}\\s*(?:>|&gt;)`, 'gi');
-      result = result.replace(pairedRe, `<details class="text-sm bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-2 my-2"><summary class="cursor-pointer font-bold text-indigo-400 select-none">${tag}</summary><div class="mt-2 text-indigo-300/80 whitespace-pre-wrap">$1</div></details>`);
+      result = result.replace(pairedRe, `<details class="text-sm bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-2 my-2 w-full max-w-full overflow-hidden"><summary class="cursor-pointer font-bold text-indigo-400 select-none">${tag}</summary><div class="mt-2 text-indigo-300/80 whitespace-pre-wrap break-words max-w-full overflow-x-auto">$1</div></details>`);
       
       // Match stray/single tags so they don't disappear in markdown rendering
       const singleRe = new RegExp(`(?:<|&lt;)\\s*${escapedTag}(?:\\s+(?:[^>&]|&[^g])+)?\\/?\\s*(?:>|&gt;)`, 'gi');
@@ -230,7 +272,8 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
                             prose-headings:text-white/90 prose-p:leading-relaxed 
                             prose-a:text-blue-400 hover:prose-a:text-blue-300
                             prose-strong:text-white prose-code:text-pink-300
-                            [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words"
+                            prose-pre:bg-black/30 prose-pre:overflow-x-auto
+                            [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words w-full overflow-hidden"
                           >
                           <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
                               {applyRegexes(msg.mes || '')}
@@ -272,7 +315,7 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
           ref={fileInputRef}
           type="file"
           multiple
-          accept=".json,.jsonl"
+          accept=".json,.jsonl,.zip"
           className="hidden"
           onChange={(e) => {
             if (e.target.files?.length) handleFileUpload(e.target.files);
@@ -286,7 +329,7 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
            <h4 className="text-white/80 font-medium mb-2">暂无绑定的聊天记录</h4>
            <div className="flex flex-col items-center gap-4 mt-2">
              <p className="text-white/40 text-sm max-w-sm">
-               点击右上角导入按钮，或直接拖拽 JSONL 文件到窗口中绑定至此角色。
+               点击右上角导入按钮，或直接拖拽 JSONL/ZIP 文件到窗口中绑定至此角色。
              </p>
            </div>
         </div>
