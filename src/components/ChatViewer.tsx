@@ -6,7 +6,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import Cropper from 'react-easy-crop';
-import { getCharacters, CharacterCard, saveChat, deleteChat, getAllChats, ChatLog } from '../lib/db';
+import { ReactNode } from 'react';
+import { getCharacters, CharacterCard, saveChat, saveChatsBulk, deleteChat, ChatLog } from '../lib/db';
 
 interface ChatMessage {
   name: string;
@@ -18,14 +19,28 @@ interface ChatMessage {
 }
 
 export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: () => void, initialChatId?: string | null, singleMode?: boolean }) {
-  const [savedChats, setSavedChats] = useState<ChatLog[]>([]);
+  const [savedChats, setSavedChats] = useState<(Omit<ChatLog, 'messages'> & { messageCount: number, firstAiName?: string, lastMessagePreview?: string })[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [activeChat, setActiveChat] = useState<ChatLog | null>(null);
 
   useEffect(() => {
     if (initialChatId) {
       setActiveChatId(initialChatId);
     }
   }, [initialChatId]);
+
+  useEffect(() => {
+    const loadActiveChat = async () => {
+      if (activeChatId) {
+        const { getChatById } = await import('../lib/db');
+        const chat = await getChatById(activeChatId);
+        setActiveChat(chat || null);
+      } else {
+        setActiveChat(null);
+      }
+    };
+    loadActiveChat();
+  }, [activeChatId]);
 
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -144,8 +159,12 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
     localStorage.removeItem('chatViewer_userAvatar');
   };
 
-  const handleSaveNote = async (chat: ChatLog) => {
-    await saveChat({ ...chat, note: editNoteContent });
+  const handleSaveNote = async (chatMeta: any) => {
+    const { getChatById } = await import('../lib/db');
+    const fullChat = await getChatById(chatMeta.id);
+    if (fullChat) {
+      await saveChat({ ...fullChat, note: editNoteContent });
+    }
     setEditingNoteFor(null);
     loadData();
   };
@@ -153,7 +172,8 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
   const loadData = async () => {
     const chars = await getCharacters(1, 9999);
     setCharacters(chars.characters);
-    const chats = await getAllChats();
+    const { getAllChatsMetadata } = await import('../lib/db');
+    const chats = await getAllChatsMetadata();
     setSavedChats(chats.sort((a,b) => b.createdAt - a.createdAt));
   };
 
@@ -176,6 +196,7 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
 
   const handleFileUpload = async (files: FileList | File[]) => {
     let imported = 0;
+    const pendingChats: ChatLog[] = [];
     
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
@@ -195,26 +216,46 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
                 const text = await zipEntry.async('text');
                 let parsedMessages: ChatMessage[] = [];
                 
-                if (lowerName.endsWith('.jsonl') || text.trim().split('\n').length > 1) {
+                if (lowerName.endsWith('.jsonl')) {
                   const lines = text.trim().split('\n');
                   parsedMessages = lines.map(line => {
                     try { return JSON.parse(line); } catch (e) { return null; }
                   }).filter(Boolean);
                 } else {
-                  const data = JSON.parse(text);
-                  if (Array.isArray(data)) parsedMessages = data;
-                  else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
-                  else parsedMessages = [data];
+                  try {
+                    const data = JSON.parse(text);
+                    if (Array.isArray(data)) parsedMessages = data;
+                    else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
+                    else parsedMessages = [data];
+                  } catch (err) {
+                    if (text.trim().split('\n').length > 1) {
+                      const lines = text.trim().split('\n');
+                      parsedMessages = lines.map(line => {
+                        try { return JSON.parse(line); } catch (e) { return null; }
+                      }).filter(Boolean);
+                    }
+                  }
                 }
                 
-                const aiMessage = parsedMessages.find(m => !m.is_user && m.name);
+                if (parsedMessages.length === 0) continue;
+
                 let charId = '';
-                if (aiMessage && aiMessage.name) {
-                  const match = characters.find(c => c.name.toLowerCase() === aiMessage.name?.toLowerCase());
-                  if (match) charId = match.id;
+                const pathParts = zipEntry.name.split('/');
+                if (pathParts.length > 1) {
+                  const parentFolderName = pathParts[pathParts.length - 2];
+                  const folderMatch = characters.find(c => c.name.toLowerCase() === parentFolderName.toLowerCase());
+                  if (folderMatch) charId = folderMatch.id;
                 }
                 
-                await saveChat({
+                if (!charId) {
+                  const aiMessage = parsedMessages.find(m => !m.is_user && m.name);
+                  if (aiMessage && aiMessage.name) {
+                    const match = characters.find(c => c.name.toLowerCase() === aiMessage.name?.toLowerCase());
+                    if (match) charId = match.id;
+                  }
+                }
+                
+                pendingChats.push({
                   id: crypto.randomUUID(),
                   characterId: charId,
                   name: zipEntry.name.split('/').pop() || zipEntry.name,
@@ -231,17 +272,28 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
           const text = await file.text();
           let parsedMessages: ChatMessage[] = [];
 
-          if (file.name.toLowerCase().endsWith('.jsonl') || text.trim().split('\n').length > 1) {
+          if (file.name.toLowerCase().endsWith('.jsonl')) {
             const lines = text.trim().split('\n');
             parsedMessages = lines.map(line => {
               try { return JSON.parse(line); } catch (e) { return null; }
             }).filter(Boolean);
           } else {
-            const data = JSON.parse(text);
-            if (Array.isArray(data)) parsedMessages = data;
-            else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
-            else parsedMessages = [data];
+            try {
+              const data = JSON.parse(text);
+              if (Array.isArray(data)) parsedMessages = data;
+              else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
+              else parsedMessages = [data];
+            } catch (err) {
+               if (text.trim().split('\n').length > 1) {
+                  const lines = text.trim().split('\n');
+                  parsedMessages = lines.map(line => {
+                    try { return JSON.parse(line); } catch (e) { return null; }
+                  }).filter(Boolean);
+               }
+            }
           }
+          
+          if (parsedMessages.length === 0) continue;
 
           const aiMessage = parsedMessages.find(m => !m.is_user && m.name);
           let charId = '';
@@ -250,7 +302,7 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
             if (match) charId = match.id;
           }
 
-          await saveChat({
+          pendingChats.push({
             id: crypto.randomUUID(),
             characterId: charId,
             name: file.name,
@@ -264,13 +316,16 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
         alert(`解析文件 ${file.name} 失败，请确保格式为酒馆导出的 zip, jsonl 或 json 格式。`);
       }
     }
+    
+    if (pendingChats.length > 0) {
+      await saveChatsBulk(pendingChats);
+    }
 
     if (imported > 0) {
       loadData();
     }
   };
 
-  const activeChat = savedChats.find(c => c.id === activeChatId);
   // Auto-detect active character if bound or match by AI name
   let activeCharacter = activeChat && activeChat.characterId ? characters.find(c => c.id === activeChat.characterId) : null;
   if (activeChat && !activeCharacter) {
@@ -414,12 +469,14 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
 
   const handleRemoveChat = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    await deleteChat(id);
-    if (activeChatId === id) {
-      if (singleMode) onClose();
-      else setActiveChatId(null);
+    if (confirm('确定要删除这条聊天记录吗？')) {
+      setSavedChats(prev => prev.filter(c => c.id !== id));
+      if (activeChatId === id) {
+        if (singleMode) onClose();
+        else setActiveChatId(null);
+      }
+      await deleteChat(id);
     }
-    loadData();
   };
 
   return (
@@ -549,7 +606,7 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
         )}
       </AnimatePresence>
 
-      <div className={`flex-1 ${!activeChatId ? 'overflow-y-auto' : 'overflow-hidden'} p-6 max-w-5xl mx-auto w-full relative`}
+      <div className={`flex-1 overflow-hidden p-6 max-w-5xl mx-auto w-full relative flex flex-col`}
            onDragEnter={handleDrag}
            onDragLeave={handleDrag}
            onDragOver={handleDrag}
@@ -564,9 +621,8 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
           </div>
         )}
 
-        {!activeChatId ? (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between px-2">
+        <div className="space-y-6 flex-1 flex flex-col min-h-0">
+          <div className="flex items-center justify-between px-2 shrink-0">
               <h3 className="text-lg font-medium text-white">所有记录 ({savedChats.length})</h3>
               <button
                 onClick={() => fileInputRef.current?.click()}
@@ -594,169 +650,178 @@ export function ChatViewer({ onClose, initialChatId, singleMode }: { onClose: ()
                 <p className="text-white/40 mb-8">支持批量导入 .zip 或 .jsonl 格式文件</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-4">
-                <AnimatePresence>
-                  {savedChats.map((chat) => {
+              <div className="flex-1 min-h-0">
+                <Virtuoso 
+                  style={{ height: '100%' }}
+                  data={savedChats}
+                  itemContent={(index, chat) => {
                     let matchedChar = chat.characterId ? characters.find(c => c.id === chat.characterId) : null;
                     if (!matchedChar) {
-                      const aiMsg = chat.messages.find(m => !m.is_user && m.name);
-                      if (aiMsg?.name) {
-                        matchedChar = characters.find(c => c.name.toLowerCase() === aiMsg.name?.toLowerCase()) || null;
+                      if (chat.firstAiName) {
+                        matchedChar = characters.find(c => c.name.toLowerCase() === chat.firstAiName?.toLowerCase()) || null;
                       }
                     }
                     return (
-                    <motion.div
-                      key={chat.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.95 }}
-                      onClick={() => setActiveChatId(chat.id)}
-                      className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-5 cursor-pointer transition flex flex-col gap-3 relative overflow-hidden"
-                    >
-                      <div className="flex justify-between items-start mb-2 gap-3">
-                        <div className="flex items-center gap-3 flex-1 min-w-0">
-                          <div className="w-10 h-10 rounded-full border border-white/20 bg-black/30 flex items-center justify-center shrink-0 shadow-inner overflow-hidden">
-                            {matchedChar && avatarUrls[matchedChar.id] ? (
-                              <img src={avatarUrls[matchedChar.id]} alt="avatar" className="w-full h-full object-cover" />
-                            ) : (
-                              <span className="text-lg font-bold text-white/80">
-                                {chat.name.charAt(0)}
-                              </span>
-                            )}
-                          </div>
-                          
-                          <div className="flex-1 min-w-0">
-                            {editingNoteFor === chat.id ? (
-                              <div className="w-full mb-1" onClick={e => e.stopPropagation()}>
-                                <input 
-                                  autoFocus
-                                  className="w-full bg-black/40 border border-blue-500/50 rounded flex px-2 py-1 text-sm text-blue-300 focus:outline-none placeholder-blue-300/30"
-                                  value={editNoteContent}
-                                  onChange={e => setEditNoteContent(e.target.value)}
-                                  onKeyDown={e => { if(e.key === 'Enter') handleSaveNote(chat); }}
-                                  onBlur={() => handleSaveNote(chat)}
-                                  placeholder="添加内容备注..."
-                                />
-                              </div>
-                            ) : (
-                              <div 
-                                className="text-sm font-medium text-blue-300 cursor-pointer hover:text-blue-200 transition flex items-center gap-2 mb-1"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setEditingNoteFor(chat.id);
-                                  setEditNoteContent(chat.note || '');
-                                }}
-                                title="点击编辑备注"
-                              >
-                                {chat.note ? (
-                                  <>
-                                    <span className="truncate">{chat.note}</span>
-                                    <span className="text-xs text-blue-300/50 shrink-0 flex items-center gap-1 leading-none pt-0.5"><Edit2 className="w-3 h-3" /></span>
-                                  </>
+                      <div className="pb-4">
+                        <div
+                          onClick={() => setActiveChatId(chat.id)}
+                          className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-5 cursor-pointer transition flex flex-col gap-3 relative overflow-hidden"
+                        >
+                          <div className="flex justify-between items-start mb-2 gap-3">
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                              <div className="w-10 h-10 rounded-full border border-white/20 bg-black/30 flex items-center justify-center shrink-0 shadow-inner overflow-hidden">
+                                {matchedChar && avatarUrls[matchedChar.id] ? (
+                                  <img src={avatarUrls[matchedChar.id]} alt="avatar" className="w-full h-full object-cover" />
                                 ) : (
-                                  <span className="text-blue-300/50 flex items-center gap-1 font-normal"><Plus className="w-3.5 h-3.5" /> 添加内容备注...</span>
+                                  <span className="text-lg font-bold text-white/80">
+                                    {chat.name.charAt(0)}
+                                  </span>
                                 )}
                               </div>
-                            )}
-                            <h4 className="font-medium text-white/90 truncate w-full text-sm" title={chat.name}>{chat.name}</h4>
-                          </div>
-                        </div>
+                              
+                              <div className="flex-1 min-w-0">
+                                {editingNoteFor === chat.id ? (
+                                  <div className="w-full mb-1" onClick={e => e.stopPropagation()}>
+                                    <input 
+                                      autoFocus
+                                      className="w-full bg-black/40 border border-blue-500/50 rounded flex px-2 py-1 text-sm text-blue-300 focus:outline-none placeholder-blue-300/30"
+                                      value={editNoteContent}
+                                      onChange={e => setEditNoteContent(e.target.value)}
+                                      onKeyDown={e => { if(e.key === 'Enter') handleSaveNote(chat); }}
+                                      onBlur={() => handleSaveNote(chat)}
+                                      placeholder="添加内容备注..."
+                                    />
+                                  </div>
+                                ) : (
+                                  <div 
+                                    className="text-sm font-medium text-blue-300 cursor-pointer hover:text-blue-200 transition flex items-center gap-2 mb-1"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingNoteFor(chat.id);
+                                      setEditNoteContent(chat.note || '');
+                                    }}
+                                    title="点击编辑备注"
+                                  >
+                                    {chat.note ? (
+                                      <>
+                                        <span className="truncate">{chat.note}</span>
+                                        <span className="text-xs text-blue-300/50 shrink-0 flex items-center gap-1 leading-none pt-0.5"><Edit2 className="w-3 h-3" /></span>
+                                      </>
+                                    ) : (
+                                      <span className="text-blue-300/50 flex items-center gap-1 font-normal"><Plus className="w-3.5 h-3.5" /> 添加内容备注...</span>
+                                    )}
+                                  </div>
+                                )}
+                                <h4 className="font-medium text-white/90 truncate w-full text-sm" title={chat.name}>{chat.name}</h4>
+                              </div>
+                            </div>
 
-                        <button 
-                          onClick={(e) => handleRemoveChat(e, chat.id)}
-                          className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg transition z-10 shrink-0"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                      <div className="flex justify-between items-center text-xs text-white/40 pb-2">
-                        <span className="flex items-center gap-1">
-                          <Book className="w-4 h-4 text-blue-400" />
-                          {chat.messages.length} 条消息
-                        </span>
-                        <span className="flex items-center gap-1">
-                           {new Date(chat.createdAt).toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="bg-black/30 rounded-lg p-4 border border-white/5 text-white/70 text-sm leading-relaxed ml-2 md:ml-16 prose prose-sm prose-invert max-w-none line-clamp-3 overflow-hidden break-words">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
-                          {formatCustomTags(applyRegexes(chat.messages.length > 0 ? chat.messages[chat.messages.length - 1].mes : '空记录', matchedChar))}
-                        </ReactMarkdown>
-                      </div>
-                    </motion.div>
-                  )})}
-                </AnimatePresence>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="relative z-0 h-full w-full">
-             <div className="absolute inset-0">
-                <Virtuoso
-                  style={{ height: '100%' }}
-                  data={activeChat?.messages || []}
-                  initialTopMostItemIndex={activeChat?.messages ? activeChat.messages.length - 1 : 0}
-                  components={{
-                    Header: () => <div className="h-24" />,
-                    Footer: () => <div className="h-32" />
-                  }}
-                  itemContent={(i, msg) => {
-                    const dateString = msg.send_date ? new Date(msg.send_date).toLocaleString() : '';
-                    return (
-                      <div className={`flex gap-4 pb-4 px-2 ${msg.is_user ? 'flex-row-reverse' : ''} overflow-hidden`}>
-                        <div className="shrink-0 pt-1">
-                          {msg.is_user ? (
-                            userAvatar ? (
-                              <div className="w-10 h-10 rounded-full border border-white/20 bg-black/30 flex items-center justify-center shrink-0 shadow-lg overflow-hidden">
-                                <img src={userAvatar} alt="user avatar" className="w-full h-full object-cover" />
-                              </div>
-                            ) : (
-                              <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20 text-white font-bold">
-                                {msg.name?.charAt(0) || 'U'}
-                              </div>
-                            )
-                          ) : (
-                            activeCharacter && avatarUrls[activeCharacter.id] ? (
-                              <img src={avatarUrls[activeCharacter.id]} alt="avatar" className="w-10 h-10 rounded-full object-cover shadow-lg border border-white/10" />
-                            ) : (
-                              <div className="w-10 h-10 rounded-full bg-indigo-900 flex items-center justify-center shadow-lg border border-indigo-500/30 text-indigo-200 font-bold">
-                                {msg.name?.charAt(0) || 'AI'}
-                              </div>
-                            )
-                          )}
-                        </div>
-                        
-                        <div className={`max-w-[80%] ${msg.is_user ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
-                          <div className={`flex items-center gap-2 text-xs ${msg.is_user ? 'flex-row-reverse text-blue-200/70' : 'text-slate-400'}`}>
-                            <span className="font-semibold">{msg.name || (msg.is_user ? 'User' : 'Character')}</span>
-                            {dateString && <span>· {dateString}</span>}
+                            <button 
+                              onClick={(e) => handleRemoveChat(e, chat.id)}
+                              className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg transition z-10 shrink-0"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           </div>
-                          
-                          <div className={`px-5 py-3 rounded-2xl ${
-                            msg.is_user 
-                              ? 'bg-blue-600/90 text-white rounded-tr-sm backdrop-blur-md border border-blue-500/30' 
-                              : 'bg-indigo-950/80 text-indigo-100 rounded-tl-sm border border-indigo-500/20 backdrop-blur-md'
-                          }`}>
-                             <div className="prose prose-invert prose-sm max-w-none 
-                                prose-headings:text-white/90 prose-p:leading-relaxed 
-                                prose-a:text-blue-400 hover:prose-a:text-blue-300
-                                prose-strong:text-white prose-code:text-pink-300
-                                prose-pre:bg-black/30 prose-pre:overflow-x-auto
-                                [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words w-full overflow-hidden"
-                              >
-                              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
-                                  {formatCustomTags(applyRegexes(msg.mes || '', activeCharacter))}
-                                </ReactMarkdown>
-                             </div>
+                          <div className="flex justify-between items-center text-xs text-white/40 pb-2">
+                            <span className="flex items-center gap-1">
+                              <Book className="w-4 h-4 text-blue-400" />
+                              {chat.messageCount} 条消息
+                            </span>
+                            <span className="flex items-center gap-1">
+                              {new Date(chat.createdAt).toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="bg-black/30 rounded-lg p-4 border border-white/5 text-white/70 text-sm leading-relaxed ml-2 md:ml-16 max-w-none line-clamp-3 overflow-hidden break-words">
+                            {formatCustomTags(applyRegexes(chat.lastMessagePreview || '空记录', matchedChar)).replace(/<\/?[^>]+(>|$)/g, "")}
                           </div>
                         </div>
                       </div>
                     );
                   }}
                 />
-             </div>
+              </div>
+            )}
           </div>
-        )}
+
+        <AnimatePresence>
+          {activeChatId && activeChat && (
+            <motion.div 
+               initial={{ opacity: 0, scale: 0.98, y: 20 }}
+               animate={{ opacity: 1, scale: 1, y: 0 }}
+               exit={{ opacity: 0, scale: 0.98, y: 20 }}
+               transition={{ duration: 0.3, ease: [0.23, 1, 0.32, 1] }}
+               className="absolute inset-0 z-10 bg-slate-900 flex h-full pt-16"
+            >
+              <div className="relative z-0 h-full w-full">
+                 <div className="absolute inset-0">
+                    <Virtuoso
+                      style={{ height: '100%' }}
+                      data={activeChat.messages}
+                      initialTopMostItemIndex={activeChat.messages ? activeChat.messages.length - 1 : 0}
+                      components={{
+                        Header: () => <div className="h-24" />,
+                        Footer: () => <div className="h-32" />
+                      }}
+                      itemContent={(i, msg) => {
+                        const dateString = msg.send_date ? new Date(msg.send_date).toLocaleString() : '';
+                        return (
+                          <div className={`flex gap-4 pb-4 px-2 ${msg.is_user ? 'flex-row-reverse' : ''} overflow-hidden w-full min-w-0`}>
+                            <div className="shrink-0 pt-1">
+                              {msg.is_user ? (
+                                userAvatar ? (
+                                  <div className="w-10 h-10 rounded-full border border-white/20 bg-black/30 flex items-center justify-center shrink-0 shadow-lg overflow-hidden">
+                                    <img src={userAvatar} alt="user avatar" className="w-full h-full object-cover" />
+                                  </div>
+                                ) : (
+                                  <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20 text-white font-bold">
+                                    {msg.name?.charAt(0) || 'U'}
+                                  </div>
+                                )
+                              ) : (
+                                activeCharacter && avatarUrls[activeCharacter.id] ? (
+                                  <img src={avatarUrls[activeCharacter.id]} alt="avatar" className="w-10 h-10 rounded-full object-cover shadow-lg border border-white/10" />
+                                ) : (
+                                  <div className="w-10 h-10 rounded-full bg-indigo-900 flex items-center justify-center shadow-lg border border-indigo-500/30 text-indigo-200 font-bold">
+                                    {msg.name?.charAt(0) || 'AI'}
+                                  </div>
+                                )
+                              )}
+                            </div>
+                            
+                            <div className={`max-w-[85%] md:max-w-[80%] min-w-0 ${msg.is_user ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
+                              <div className={`flex items-center gap-2 text-xs ${msg.is_user ? 'flex-row-reverse text-blue-200/70' : 'text-slate-400'}`}>
+                                <span className="font-semibold">{msg.name || (msg.is_user ? 'User' : 'Character')}</span>
+                                {dateString && <span>· {dateString}</span>}
+                              </div>
+                              
+                              <div className={`px-5 py-3 rounded-2xl max-w-full min-w-0 overflow-x-auto ${
+                                msg.is_user 
+                                  ? 'bg-blue-600/90 text-white rounded-tr-sm backdrop-blur-md border border-blue-500/30' 
+                                  : 'bg-indigo-950/80 text-indigo-100 rounded-tl-sm border border-indigo-500/20 backdrop-blur-md'
+                              }`}>
+                                 <div className="prose prose-invert prose-sm max-w-none 
+                                    prose-headings:text-white/90 prose-p:leading-relaxed 
+                                    prose-a:text-blue-400 hover:prose-a:text-blue-300
+                                    prose-strong:text-white prose-code:text-pink-300
+                                    prose-pre:bg-black/30 prose-pre:max-w-full
+                                    [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words w-full"
+                                  >
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+                                      {formatCustomTags(applyRegexes(msg.mes || '', activeCharacter))}
+                                    </ReactMarkdown>
+                                 </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }}
+                    />
+                 </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {showSettings && (

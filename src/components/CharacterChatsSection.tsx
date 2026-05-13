@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { getChatsForCharacter, deleteChat, saveChat, ChatLog, getAllChats } from '../lib/db';
+import { getChatsForCharacter, deleteChat, saveChat, saveChatsBulk, ChatLog } from '../lib/db';
 import { MessageSquare, Trash2, Calendar, FileJson, UploadCloud, Edit2, Plus, ArrowLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { Virtuoso } from 'react-virtuoso';
+import { Virtuoso, VirtuosoGrid } from 'react-virtuoso';
 
 interface Props {
   characterId: string;
@@ -16,20 +16,25 @@ interface Props {
 }
 
 export function CharacterChatsSection({ characterId, characterName, regexScripts, avatar, onOpenChat }: Props) {
-  const [chats, setChats] = useState<ChatLog[]>([]);
+  const [chats, setChats] = useState<any[]>([]);
   const [selectedChat, setSelectedChat] = useState<ChatLog | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [editingNoteFor, setEditingNoteFor] = useState<string | null>(null);
   const [editNoteContent, setEditNoteContent] = useState('');
   const [customTags, setCustomTags] = useState<string[]>([]);
+  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    setScrollParent(document.getElementById('character-detail-scroll-container'));
+  }, []);
 
   const loadChats = async () => {
-    const all = await getAllChats();
+    const { getAllChatsMetadata } = await import('../lib/db');
+    const all = await getAllChatsMetadata();
     const list = all.filter(c => {
       if (c.characterId === characterId) return true;
       if (!c.characterId) {
-         const aiMsg = c.messages.find(m => !m.is_user && m.name);
-         if (aiMsg?.name && aiMsg.name.toLowerCase() === characterName.toLowerCase()) {
+         if (c.firstAiName && c.firstAiName.toLowerCase() === characterName.toLowerCase()) {
             return true;
          }
       }
@@ -48,23 +53,38 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
     }
   }, [characterId]);
 
-  const handleSaveNote = async (chat: ChatLog) => {
-    await saveChat({ ...chat, note: editNoteContent });
+  const handleSaveNote = async (chatMeta: any) => {
+    const { getChatById } = await import('../lib/db');
+    const fullChat = await getChatById(chatMeta.id);
+    if (fullChat) {
+      await saveChat({ ...fullChat, note: editNoteContent });
+    }
     setEditingNoteFor(null);
     loadChats();
+  };
+
+  const handleChatClick = async (chatMeta: any) => {
+    if (onOpenChat) {
+      onOpenChat(chatMeta.id);
+    } else {
+      const { getChatById } = await import('../lib/db');
+      const chat = await getChatById(chatMeta.id);
+      setSelectedChat(chat || null);
+    }
   };
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if(confirm('确定要删除这条聊天记录吗？')) {
-      await deleteChat(id);
+      setChats(prev => prev.filter(c => c.id !== id));
       if (selectedChat?.id === id) setSelectedChat(null);
-      loadChats();
+      await deleteChat(id);
     }
   };
 
   const handleFileUpload = async (files: FileList | File[]) => {
     let imported = 0;
+    const pendingChats: ChatLog[] = [];
     
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
@@ -84,19 +104,30 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
                 const text = await zipEntry.async('text');
                 let parsedMessages: any[] = [];
                 
-                if (lowerName.endsWith('.jsonl') || text.trim().split('\n').length > 1) {
+                if (lowerName.endsWith('.jsonl')) {
                   const lines = text.trim().split('\n');
                   parsedMessages = lines.map(line => {
                     try { return JSON.parse(line); } catch (e) { return null; }
                   }).filter(Boolean);
                 } else {
-                  const data = JSON.parse(text);
-                  if (Array.isArray(data)) parsedMessages = data;
-                  else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
-                  else parsedMessages = [data];
+                  try {
+                    const data = JSON.parse(text);
+                    if (Array.isArray(data)) parsedMessages = data;
+                    else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
+                    else parsedMessages = [data];
+                  } catch (err) {
+                    if (text.trim().split('\n').length > 1) {
+                        const lines = text.trim().split('\n');
+                        parsedMessages = lines.map(line => {
+                          try { return JSON.parse(line); } catch (e) { return null; }
+                        }).filter(Boolean);
+                    }
+                  }
                 }
                 
-                await saveChat({
+                if (parsedMessages.length === 0) continue;
+                
+                pendingChats.push({
                   id: crypto.randomUUID(),
                   characterId: characterId,
                   name: zipEntry.name.split('/').pop() || zipEntry.name,
@@ -113,19 +144,30 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
           const text = await file.text();
           let parsedMessages: any[] = [];
 
-          if (file.name.toLowerCase().endsWith('.jsonl') || text.trim().split('\n').length > 1) {
+          if (file.name.toLowerCase().endsWith('.jsonl')) {
             const lines = text.trim().split('\n');
             parsedMessages = lines.map(line => {
               try { return JSON.parse(line); } catch (e) { return null; }
             }).filter(Boolean);
           } else {
-            const data = JSON.parse(text);
-            if (Array.isArray(data)) parsedMessages = data;
-            else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
-            else parsedMessages = [data];
+            try {
+              const data = JSON.parse(text);
+              if (Array.isArray(data)) parsedMessages = data;
+              else if (data.chat && Array.isArray(data.chat)) parsedMessages = data.chat;
+              else parsedMessages = [data];
+            } catch (err) {
+              if (text.trim().split('\n').length > 1) {
+                const lines = text.trim().split('\n');
+                parsedMessages = lines.map(line => {
+                  try { return JSON.parse(line); } catch (e) { return null; }
+                }).filter(Boolean);
+              }
+            }
           }
 
-          await saveChat({
+          if (parsedMessages.length === 0) continue;
+
+          pendingChats.push({
             id: crypto.randomUUID(),
             characterId: characterId,
             name: file.name,
@@ -138,6 +180,10 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
         console.error(e);
         alert(`解析文件 ${file.name} 失败，请确保格式为记录导出的 zip, jsonl 或 json 格式。`);
       }
+    }
+
+    if (pendingChats.length > 0) {
+      await saveChatsBulk(pendingChats);
     }
 
     if (imported > 0) {
@@ -207,95 +253,15 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
     return result;
   };
 
-  if (selectedChat) {
-    return (
-      <motion.div 
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0 }}
-        className="space-y-4"
-      >
-        <div className="flex items-center justify-between pb-4 border-b border-white/10 shrink-0 gap-4">
-           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-             <button onClick={() => setSelectedChat(null)} className="flex items-center gap-1.5 text-white/50 hover:text-white transition whitespace-nowrap shrink-0">
-               <ArrowLeft className="w-4 h-4" /> 
-               <span className="hidden sm:inline">返回列表</span>
-             </button>
-             <h3 className="text-base sm:text-lg font-medium text-white truncate" title={selectedChat.name}>{selectedChat.name}</h3>
-           </div>
-           <button 
-             onClick={(e) => handleDelete(selectedChat.id, e)}
-             className="p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg transition shrink-0"
-             title="删除这条聊天记录"
-           >
-             <Trash2 className="w-4 h-4" />
-           </button>
-        </div>
 
-        <div className="flex-[1_1_100%] mt-6 pr-2 min-h-[500px]">
-          <Virtuoso
-            style={{ height: '100%' }}
-            data={selectedChat.messages}
-            initialTopMostItemIndex={selectedChat.messages ? selectedChat.messages.length - 1 : 0}
-            itemContent={(i, msg) => {
-             const dateString = msg.send_date ? new Date(msg.send_date).toLocaleString() : '';
-             return (
-                  <div className={`flex gap-4 pb-6 ${msg.is_user ? 'flex-row-reverse' : ''} overflow-hidden`}>
-                    <div className="shrink-0 pt-1">
-                      {msg.is_user ? (
-                        <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20 text-white font-bold">
-                          {msg.name?.charAt(0) || 'U'}
-                        </div>
-                      ) : (
-                        avatar ? (
-                          <img src={avatar} alt="avatar" className="w-10 h-10 rounded-full object-cover shadow-lg border border-white/10" />
-                        ) : (
-                          <div className="w-10 h-10 rounded-full bg-indigo-900 flex items-center justify-center shadow-lg border border-indigo-500/30 text-indigo-200 font-bold">
-                            {msg.name?.charAt(0) || 'AI'}
-                          </div>
-                        )
-                      )}
-                    </div>
-                    
-                    <div className={`max-w-[80%] ${msg.is_user ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
-                      <div className={`flex items-center gap-2 text-xs ${msg.is_user ? 'flex-row-reverse text-blue-200/70' : 'text-slate-400'}`}>
-                        <span className="font-semibold">{msg.name || (msg.is_user ? 'User' : 'Character')}</span>
-                        {dateString && <span>· {dateString}</span>}
-                      </div>
-                      
-                      <div className={`px-5 py-3 rounded-2xl ${
-                        msg.is_user 
-                          ? 'bg-blue-600/90 text-white rounded-tr-sm backdrop-blur-md border border-blue-500/30' 
-                          : 'bg-indigo-950/80 text-indigo-100 rounded-tl-sm border border-indigo-500/20 backdrop-blur-md'
-                      }`}>
-                         <div className="prose prose-invert prose-sm max-w-none 
-                            prose-headings:text-white/90 prose-p:leading-relaxed 
-                            prose-a:text-blue-400 hover:prose-a:text-blue-300
-                            prose-strong:text-white prose-code:text-pink-300
-                            prose-pre:bg-black/30 prose-pre:overflow-x-auto
-                            [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words w-full overflow-hidden"
-                          >
-                          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
-                              {applyRegexes(msg.mes || '')}
-                            </ReactMarkdown>
-                         </div>
-                      </div>
-                    </div>
-                  </div>
-             );
-            }}
-          />
-        </div>
-      </motion.div>
-    );
-  }
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
-      className="space-y-6"
+      className="space-y-6 relative"
     >
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
@@ -333,19 +299,16 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
              </p>
            </div>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {chats.map(chat => (
+      ) : scrollParent ? (
+        <VirtuosoGrid
+          customScrollParent={scrollParent}
+          listClassName="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+          data={chats}
+          itemContent={(index, chat) => (
             <div 
               key={chat.id}
-              onClick={() => {
-                if (onOpenChat) {
-                  onOpenChat(chat.id);
-                } else {
-                  setSelectedChat(chat);
-                }
-              }}
-              className="group cursor-pointer bg-white/5 hover:bg-white/10 border border-white/10 hover:border-blue-500/50 rounded-2xl p-4 transition-all hover:shadow-[0_0_20px_rgba(59,130,246,0.1)] relative"
+              onClick={() => handleChatClick(chat)}
+              className="group cursor-pointer bg-white/5 hover:bg-white/10 border border-white/10 hover:border-blue-500/50 rounded-2xl p-4 transition-all hover:shadow-[0_0_20px_rgba(59,130,246,0.1)] relative h-full flex flex-col"
             >
               <div className="flex justify-between items-start mb-2 gap-3">
                 <div className="p-2 bg-blue-500/20 rounded-lg flex-shrink-0">
@@ -395,19 +358,105 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
                 </button>
               </div>
               
-              <h4 className="font-medium text-white mb-2 truncate text-sm" title={chat.name}>{chat.name}</h4>
+              <h4 className="font-medium text-white mb-2 truncate text-sm flex-1" title={chat.name}>{chat.name}</h4>
               
-              <div className="flex justify-between items-center text-xs text-white/40">
+              <div className="flex justify-between items-center text-xs text-white/40 mt-auto">
                 <span className="flex items-center gap-1">
                   <Calendar className="w-3 h-3" />
                   {new Date(chat.createdAt).toLocaleDateString()}
                 </span>
-                <span>{chat.messages.length} 条消息</span>
+                <span>{chat.messageCount} 条消息</span>
               </div>
             </div>
-          ))}
-        </div>
-      )}
+          )}
+        />
+      ) : null}
     </motion.div>
+
+    <AnimatePresence>
+      {selectedChat && (
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.97, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.97, y: 20 }}
+          transition={{ duration: 0.3, ease: [0.23, 1, 0.32, 1] }}
+          className="fixed inset-0 z-[120] bg-slate-900 flex flex-col p-4 sm:p-6"
+        >
+          <div className="max-w-4xl mx-auto w-full flex flex-col h-full bg-slate-900/50 rounded-2xl border border-white/10 overflow-hidden shadow-2xl">
+            <div className="p-4 bg-white/5 border-b border-white/10 flex justify-between items-center shrink-0">
+              <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+                <button onClick={() => setSelectedChat(null)} className="flex items-center gap-1.5 text-white/50 hover:text-white transition whitespace-nowrap shrink-0 p-2">
+                  <ArrowLeft className="w-5 h-5" /> 
+                </button>
+                <h3 className="text-base sm:text-lg font-medium text-white truncate" title={selectedChat.name}>{selectedChat.name}</h3>
+              </div>
+              <button 
+                onClick={(e) => handleDelete(selectedChat.id, e)}
+                className="p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg transition shrink-0"
+                title="删除这条聊天记录"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+            
+            <div className="flex-[1_1_100%] min-h-0 bg-slate-900">
+              <Virtuoso
+                style={{ height: '100%' }}
+                data={selectedChat.messages}
+                initialTopMostItemIndex={selectedChat.messages ? selectedChat.messages.length - 1 : 0}
+                itemContent={(i, msg) => {
+                 const dateString = msg.send_date ? new Date(msg.send_date).toLocaleString() : '';
+                 return (
+                      <div className={`flex gap-4 pb-6 mt-4 ${msg.is_user ? 'flex-row-reverse' : ''} overflow-hidden w-full min-w-0 px-4 sm:px-6`}>
+                        <div className="shrink-0 pt-1">
+                          {msg.is_user ? (
+                            <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20 text-white font-bold">
+                              {msg.name?.charAt(0) || 'U'}
+                            </div>
+                          ) : (
+                            avatar ? (
+                              <img src={avatar} alt="avatar" className="w-10 h-10 rounded-full object-cover shadow-lg border border-white/10" />
+                            ) : (
+                              <div className="w-10 h-10 rounded-full bg-indigo-900 flex items-center justify-center shadow-lg border border-indigo-500/30 text-indigo-200 font-bold">
+                                {msg.name?.charAt(0) || 'AI'}
+                              </div>
+                            )
+                          )}
+                        </div>
+                        
+                        <div className={`max-w-[85%] md:max-w-[80%] min-w-0 ${msg.is_user ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
+                          <div className={`flex items-center gap-2 text-xs ${msg.is_user ? 'flex-row-reverse text-blue-200/70' : 'text-slate-400'}`}>
+                            <span className="font-semibold">{msg.name || (msg.is_user ? 'User' : 'Character')}</span>
+                            {dateString && <span>· {dateString}</span>}
+                          </div>
+                          
+                          <div className={`px-5 py-3 rounded-2xl max-w-full min-w-0 overflow-x-auto ${
+                            msg.is_user 
+                              ? 'bg-blue-600/90 text-white rounded-tr-sm backdrop-blur-md border border-blue-500/30' 
+                              : 'bg-indigo-950/80 text-indigo-100 rounded-tl-sm border border-indigo-500/20 backdrop-blur-md'
+                          }`}>
+                             <div className="prose prose-invert prose-sm max-w-none 
+                                prose-headings:text-white/90 prose-p:leading-relaxed 
+                                prose-a:text-blue-400 hover:prose-a:text-blue-300
+                                prose-strong:text-white prose-code:text-pink-300
+                                prose-pre:bg-black/30 prose-pre:max-w-full
+                                [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words w-full"
+                              >
+                              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+                                  {applyRegexes(msg.mes || '')}
+                                </ReactMarkdown>
+                             </div>
+                          </div>
+                        </div>
+                      </div>
+                 );
+                }}
+              />
+            </div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+    </>
   );
 }

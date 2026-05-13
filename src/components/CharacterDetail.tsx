@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, StickyNote, ChevronRight, Plus, Edit2, Power, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Check, Upload } from 'lucide-react';
 import { getCharacter, deleteCharacter, saveCharacter, CharacterCard, getFolders } from '../lib/db';
@@ -188,6 +189,11 @@ export function CharacterDetail({ id, onBack, onOpenChat }: Props) {
 
   const getNormalizedExportData = () => {
     const exportData = JSON.parse(JSON.stringify(character.data));
+    
+    // Remove avatar fields so importing clients don't get stuck on old avatar
+    if (exportData.avatar) delete exportData.avatar;
+    if (exportData.data && exportData.data.avatar) delete exportData.data.avatar;
+    
     if (exportData.entries) {
       exportData.entries = normalizeWorldbookEntries(exportData.entries);
     } else if (exportData.data && exportData.data.entries) {
@@ -265,6 +271,7 @@ export function CharacterDetail({ id, onBack, onOpenChat }: Props) {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 20 }}
+      id="character-detail-scroll-container"
       className="fixed inset-0 bg-black text-white overflow-y-auto z-50"
     >
       {/* Blurred Background */}
@@ -321,7 +328,7 @@ export function CharacterDetail({ id, onBack, onOpenChat }: Props) {
                 <div className="flex justify-end gap-3">
                   <button
                     onClick={() => setShowDeleteConfirm(false)}
-                    className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition"
+                    className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white transition"
                   >
                     取消
                   </button>
@@ -761,21 +768,18 @@ export function CharacterDetail({ id, onBack, onOpenChat }: Props) {
                     </div>
                   </div>
 
-                  <AnimatePresence>
-                    {isAddingAlternate && (
-                      <FullScreenTextModal
-                        title="添加备用开场白"
-                        content=""
-                        onClose={() => setIsAddingAlternate(false)}
-                        onSave={(val) => {
-                          const newGreetings = [...(data.alternate_greetings || []), val];
-                          updateField('alternate_greetings', newGreetings);
-                          setIsAddingAlternate(false);
-                        }}
-                        initialEditMode={true}
-                      />
-                    )}
-                  </AnimatePresence>
+                  <FullScreenTextModal
+                    isOpen={isAddingAlternate}
+                    title="添加备用开场白"
+                    content=""
+                    onClose={() => setIsAddingAlternate(false)}
+                    onSave={(val) => {
+                      const newGreetings = [...(data.alternate_greetings || []), val];
+                      updateField('alternate_greetings', newGreetings);
+                      setIsAddingAlternate(false);
+                    }}
+                    initialEditMode={true}
+                  />
                 </motion.div>
               )}
 
@@ -923,32 +927,33 @@ export function CharacterDetail({ id, onBack, onOpenChat }: Props) {
         </div>
       </div>
 
-      <AnimatePresence>
-        {showAvatarViewer && character && (
-          <AvatarViewer
-            character={character}
-            onClose={() => setShowAvatarViewer(false)}
-            onUpdate={(updatedCharacter) => {
-              setCharacter(updatedCharacter);
-              if (updatedCharacter.avatarBlob) {
-                const url = URL.createObjectURL(updatedCharacter.avatarBlob);
-                setAvatarUrl(url);
-              }
-            }}
-          />
-        )}
-      </AnimatePresence>
+      {character && (
+        <AvatarViewer
+          isOpen={showAvatarViewer}
+          character={character}
+          onClose={() => setShowAvatarViewer(false)}
+          onUpdate={(updatedCharacter) => {
+            setCharacter(updatedCharacter);
+            if (updatedCharacter.avatarBlob) {
+              const url = URL.createObjectURL(updatedCharacter.avatarBlob);
+              setAvatarUrl(url);
+            }
+          }}
+        />
+      )}
     </motion.div>
   );
 }
 
 function FullScreenTextModal({ 
+  isOpen,
   title, 
   content, 
   onClose,
   onSave,
   initialEditMode = false
 }: { 
+  isOpen: boolean;
   title: string; 
   content: string; 
   onClose: () => void;
@@ -962,131 +967,233 @@ function FullScreenTextModal({
     if (onSave) {
       onSave(editValue);
     }
-    setIsEditing(false);
+    setIsEditing(false); // Only exit edit mode, modal stays open
   };
 
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 50 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: 50 }}
-      className="fixed inset-0 z-[100] bg-slate-900 flex flex-col"
-    >
-      <header className="sticky top-0 p-4 pt-7 sm:pt-7 flex items-center gap-3 bg-slate-900/90 backdrop-blur-xl border-b border-white/10 z-20">
-        <button onClick={onClose} className="p-2 rounded-full hover:bg-white/10 transition">
-          <ArrowLeft className="w-6 h-6" />
-        </button>
-        <h2 className="text-lg font-bold truncate">{title}</h2>
-        {onSave && (
-          isEditing ? (
-            <button onClick={handleSave} className="ml-auto p-2 text-green-400 font-medium hover:bg-green-400/10 rounded-lg transition">
-              保存
-            </button>
-          ) : (
-            <button onClick={() => setIsEditing(true)} className="ml-auto p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition">
-              <Edit2 className="w-5 h-5" />
-            </button>
-          )
-        )}
-      </header>
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 hide-scrollbar bg-slate-900 flex flex-col">
-        <div className="max-w-2xl mx-auto w-full flex-1 flex flex-col">
-          {isEditing ? (
-            <textarea 
-              value={editValue}
-              onChange={e => setEditValue(e.target.value)}
-              className="w-full flex-1 bg-black/40 border border-white/20 rounded-xl p-4 text-white/90 text-base sm:text-lg leading-relaxed sm:leading-loose focus:outline-none focus:border-purple-500 resize-none"
-              autoFocus
-            />
-          ) : (
-            <p className="text-white/90 whitespace-pre-wrap text-base sm:text-lg leading-relaxed sm:leading-loose">
-              {content}
-            </p>
-          )}
-        </div>
-      </div>
-    </motion.div>
+  return createPortal(
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          key="full-screen-text-modal"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex justify-center items-center p-4 sm:p-6"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ scale: 0.95, opacity: 0, y: 20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.95, opacity: 0, y: 20 }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border border-white/10 shadow-2xl rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
+          >
+            <header className="px-5 py-4 flex items-center justify-between border-b border-white/10 bg-slate-800/50">
+              <h2 className="text-lg font-bold truncate pr-4 text-white">{title}</h2>
+              <div className="flex items-center gap-2">
+                {onSave && (
+                  isEditing ? (
+                    <button onClick={handleSave} className="px-3 py-1.5 text-sm bg-purple-500 hover:bg-purple-600 text-white rounded-lg transition font-medium shadow-lg shadow-purple-500/20">
+                      保存
+                    </button>
+                  ) : (
+                    <button onClick={() => setIsEditing(true)} className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition">
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                  )
+                )}
+                <button onClick={onClose} className="p-2 rounded-full hover:bg-red-500/20 text-white/60 hover:text-red-400 transition ml-2">
+                  <XIcon className="w-5 h-5" />
+                </button>
+              </div>
+            </header>
+
+            <div className="flex-1 overflow-y-auto p-5 sm:p-6 custom-scrollbar bg-slate-900">
+              {isEditing ? (
+                <textarea 
+                  value={editValue}
+                  onChange={e => setEditValue(e.target.value)}
+                  className="w-full min-h-[300px] h-full bg-black/40 border border-white/20 rounded-xl p-4 text-white/90 text-sm sm:text-base leading-relaxed focus:outline-none focus:border-purple-500 resize-none font-sans"
+                  autoFocus
+                />
+              ) : (
+                <div className="text-white/90 whitespace-pre-wrap text-sm sm:text-base leading-relaxed break-words">
+                  {content || <span className="text-white/30 italic">暂无内容</span>}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>,
+    document.body
   );
 }
 
 function TextPreview({ title, content, onSave, initialEditMode }: { title: string; content: string; onSave?: (val: string) => void; initialEditMode?: boolean }) {
-  const [isModalOpen, setIsModalOpen] = useState(initialEditMode || false);
+  const [isExpanded, setIsExpanded] = useState(initialEditMode || false);
+  const [isEditing, setIsEditing] = useState(initialEditMode || false);
+  const [editValue, setEditValue] = useState(content);
 
-  return (
-    <>
+  const handleSave = () => {
+    if (onSave) {
+      onSave(editValue);
+    }
+    setIsEditing(false);
+  };
+
+  const handleEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsEditing(true);
+    if (!isExpanded) setIsExpanded(true);
+  };
+
+  if (!isExpanded && !isEditing) {
+    return (
       <div 
-        onClick={() => setIsModalOpen(true)}
+        onClick={() => setIsExpanded(true)}
         className="group relative cursor-pointer bg-white/5 hover:bg-white/10 p-3 rounded-xl border border-white/10 transition-colors w-full overflow-hidden"
       >
-        <div className="text-white/70 text-sm line-clamp-2 pr-8 break-words w-full">
+        <div className="text-white/70 text-sm line-clamp-3 pr-8 break-words w-full">
           {content || <span className="text-white/30 italic">空内容...</span>}
         </div>
-        <div className="mt-1.5 text-purple-400 text-xs font-medium flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
-          <span>阅读全文</span>
-          <ChevronRight className="w-3 h-3" />
+        <div className="mt-1.5 text-purple-400 text-xs font-medium flex justify-between items-center opacity-80 group-hover:opacity-100 transition-opacity">
+          <span className="flex items-center gap-1">展开全文 <ChevronDown className="w-3 h-3" /></span>
         </div>
       </div>
+    );
+  }
 
-      <AnimatePresence>
-        {isModalOpen && (
-          <FullScreenTextModal 
-            title={title} 
-            content={content} 
-            onClose={() => setIsModalOpen(false)} 
-            onSave={onSave}
-            initialEditMode={initialEditMode && !content}
-          />
-        )}
-      </AnimatePresence>
-    </>
+  return (
+    <motion.div 
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: 'auto' }}
+      className="bg-white/5 p-4 rounded-xl border border-white/10 flex flex-col relative w-full mb-2"
+    >
+      <div className="flex justify-between items-center mb-3">
+        <div className="text-sm font-medium text-white/50">{title}</div>
+        <div className="flex gap-2">
+          {isEditing ? (
+             <button onClick={handleSave} className="text-green-400 hover:bg-green-400/10 p-1.5 rounded-lg text-xs font-medium transition cursor-pointer">
+               保存
+             </button>
+          ) : (
+            onSave && (
+              <button 
+                onClick={handleEdit}
+                className="text-white/60 hover:text-white hover:bg-white/10 p-1.5 rounded-lg transition cursor-pointer"
+              >
+                <Edit2 className="w-4 h-4" />
+              </button>
+            )
+          )}
+        </div>
+      </div>
+      
+      {isEditing ? (
+        <textarea 
+          value={editValue}
+          onChange={e => setEditValue(e.target.value)}
+          className="w-full bg-black/40 border border-white/20 rounded-xl p-3 text-white/90 text-sm sm:text-base leading-relaxed focus:outline-none focus:border-purple-500 min-h-[300px] resize-none"
+          autoFocus
+        />
+      ) : (
+        <div className="text-white/90 whitespace-pre-wrap text-sm sm:text-base leading-relaxed max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar break-words w-full">
+          {content}
+        </div>
+      )}
+
+      <button 
+        onClick={() => { setIsExpanded(false); setIsEditing(false); }}
+        className="mt-4 flex items-center justify-center gap-1 text-purple-400 text-sm font-medium py-2 hover:bg-white/10 bg-white/5 rounded-lg transition w-full cursor-pointer"
+      >
+        <ChevronUp className="w-4 h-4" /> 收起 
+      </button>
+    </motion.div>
   );
 }
 
 function AlternateGreetingCard({ index, content, onSave, onDelete }: { key?: string | number; index: number; content: string; onSave: (val: string) => void; onDelete: () => void }) {
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState(content);
+
+  const handleSave = () => {
+    onSave(editValue);
+    setIsEditing(false);
+  };
+
+  const handleEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsEditing(true);
+    if (!isExpanded) setIsExpanded(true);
+  };
 
   return (
-    <>
-      <div className="bg-white/5 p-3 rounded-xl border border-white/10 flex gap-3 transition-opacity hover:bg-white/10">
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap sm:flex-nowrap justify-between items-start gap-2 mb-1">
-            <div className="flex flex-col min-w-0 flex-1">
-              <h4 className="font-semibold text-purple-300 truncate">
-                备用开场白 {index + 1}
-              </h4>
-            </div>
-            <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
-              <button onClick={onDelete} className="p-1 hover:bg-red-500/20 rounded text-white/60 hover:text-red-400 transition">
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-          <div 
-            className="group cursor-pointer mt-2 w-full"
-            onClick={() => setIsModalOpen(true)}
-          >
-            <div className="text-white/70 text-sm line-clamp-2 break-words w-full">
-              {content || <span className="text-white/30 italic">空内容...</span>}
-            </div>
-            <div className="mt-1.5 text-purple-400 text-xs font-medium flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
-              <span>阅读全文</span>
-              <ChevronRight className="w-3 h-3" />
-            </div>
-          </div>
+    <div className="bg-white/5 p-3 rounded-xl border border-white/10 flex flex-col gap-2 transition-opacity hover:bg-white/10 mb-2">
+      <div className="flex flex-wrap sm:flex-nowrap justify-between items-start gap-2 mb-1">
+        <div className="flex flex-col min-w-0 flex-1">
+          <h4 className="font-semibold text-purple-300 truncate">
+            备用开场白 {index + 1}
+          </h4>
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+          {isExpanded && !isEditing && (
+            <button onClick={handleEdit} className="p-1 hover:bg-white/10 rounded text-white/60 hover:text-white transition">
+              <Edit2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {isEditing && (
+            <button onClick={handleSave} className="p-1 hover:bg-green-500/20 rounded text-green-400 transition">
+              <Check className="w-4 h-4" />
+            </button>
+          )}
+          <button onClick={onDelete} className="p-1 hover:bg-red-500/20 rounded text-white/60 hover:text-red-400 transition">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
-
-      <AnimatePresence>
-        {isModalOpen && (
-          <FullScreenTextModal 
-            title={`备用开场白 ${index + 1}`} 
-            content={content} 
-            onClose={() => setIsModalOpen(false)} 
-            onSave={onSave}
-          />
-        )}
-      </AnimatePresence>
-    </>
+      
+      {!isExpanded && !isEditing ? (
+        <div 
+          className="group cursor-pointer w-full"
+          onClick={() => setIsExpanded(true)}
+        >
+          <div className="text-white/70 text-sm line-clamp-3 break-words w-full">
+            {content || <span className="text-white/30 italic">空内容...</span>}
+          </div>
+          <div className="mt-1.5 text-purple-400 text-xs font-medium flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+            <span>展开全文</span>
+            <ChevronDown className="w-3 h-3" />
+          </div>
+        </div>
+      ) : (
+        <motion.div 
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          className="w-full flex flex-col"
+        >
+          {isEditing ? (
+            <textarea 
+              value={editValue}
+              onChange={e => setEditValue(e.target.value)}
+              className="w-full bg-black/40 border border-white/20 rounded-xl p-3 text-white/90 text-sm sm:text-base leading-relaxed focus:outline-none focus:border-purple-500 min-h-[200px] resize-none"
+              autoFocus
+            />
+          ) : (
+            <div className="text-white/90 whitespace-pre-wrap text-sm sm:text-base leading-relaxed max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar break-words w-full">
+              {content}
+            </div>
+          )}
+          <button 
+            onClick={() => { setIsExpanded(false); setIsEditing(false); }}
+            className="mt-3 flex items-center justify-center gap-1 text-purple-400 text-sm font-medium py-1.5 hover:bg-white/5 rounded-lg transition w-full cursor-pointer"
+          >
+            <ChevronUp className="w-4 h-4" /> 收起 
+          </button>
+        </motion.div>
+      )}
+    </div>
   );
 }
 
@@ -1109,20 +1216,17 @@ function Section({ title, content, onSave }: { title: string; content?: string; 
         <p className="text-white/30 text-sm italic">暂无内容</p>
       )}
 
-      <AnimatePresence>
-        {isAdding && (
-          <FullScreenTextModal
-            title={`添加 ${title}`}
-            content=""
-            onClose={() => setIsAdding(false)}
-            onSave={(val) => {
-              if (onSave) onSave(val);
-              setIsAdding(false);
-            }}
-            initialEditMode={true}
-          />
-        )}
-      </AnimatePresence>
+      <FullScreenTextModal
+        isOpen={isAdding}
+        title={`添加 ${title}`}
+        content=""
+        onClose={() => setIsAdding(false)}
+        onSave={(val) => {
+          if (onSave) onSave(val);
+          setIsAdding(false);
+        }}
+        initialEditMode={true}
+      />
     </div>
   );
 }
@@ -1232,16 +1336,25 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
   };
 
   const renderEditForm = () => {
-    if (editingIndex === null) return null;
-    return (
-      <div className="fixed inset-0 z-[110] bg-slate-900 sm:bg-black/80 sm:backdrop-blur-sm flex flex-col sm:items-center sm:justify-center sm:p-6" onClick={() => setEditingIndex(null)}>
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 20 }}
-          className="bg-slate-900 flex flex-col w-full h-full sm:h-auto sm:border border-white/10 sm:rounded-2xl shadow-2xl sm:max-w-2xl sm:max-h-[85vh] overflow-hidden"
-          onClick={e => e.stopPropagation()}
-        >
+    return createPortal(
+      <AnimatePresence>
+        {editingIndex !== null && (
+            <motion.div 
+              key="worldbook-modal-backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[120] bg-slate-900 sm:bg-black/80 sm:backdrop-blur-sm flex flex-col sm:items-center sm:justify-center sm:p-6" 
+              onClick={() => setEditingIndex(null)}
+            >
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.97, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.97, y: 20 }}
+                transition={{ duration: 0.3, ease: [0.23, 1, 0.32, 1] }}
+                className="bg-slate-900 flex flex-col w-full h-full sm:h-auto sm:border border-white/10 sm:rounded-2xl shadow-2xl sm:max-w-4xl sm:max-h-[85vh] overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
           <div className="flex-none p-4 sm:p-6 border-b border-white/10 flex items-center justify-between bg-black/20">
             <h3 className="text-lg font-semibold">{editingIndex === -1 ? '新增世界书条目' : '编辑世界书条目'}</h3>
             <button onClick={() => setEditingIndex(null)} className="p-1 hover:bg-white/10 rounded-full">
@@ -1249,69 +1362,87 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
             </button>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-slate-900 flex flex-col gap-4">
-            <div>
-              <label className="block text-xs text-white/60 mb-1">标题 / 备注 (Comment)</label>
-              <input 
-                type="text" 
-                value={editForm.comment || editForm.name || ''} 
-                onChange={e => setEditForm({...editForm, comment: e.target.value})}
-                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
-                placeholder="例如: 角色背景、设定1"
-              />
+          <div className="flex-1 overflow-y-auto p-5 sm:p-8 bg-slate-900 flex flex-col gap-6 custom-scrollbar">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Left Column */}
+              <div className="space-y-5">
+                <div>
+                  <label className="block text-xs font-medium text-white/70 mb-1.5 pl-1">标题 / 备注 (Comment)</label>
+                  <input 
+                    type="text" 
+                    value={editForm.comment || editForm.name || ''} 
+                    onChange={e => setEditForm({...editForm, comment: e.target.value})}
+                    className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-purple-500/50 focus:bg-black/60 transition-all font-medium text-white placeholder-white/30"
+                    placeholder="例如: 角色背景、设定1"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-white/70 mb-1.5 pl-1">关键词 (用逗号分隔)</label>
+                  <input 
+                    type="text" 
+                    value={editForm.keys} 
+                    onChange={e => setEditForm({...editForm, keys: e.target.value})}
+                    className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-purple-500/50 focus:bg-black/60 transition-all text-white placeholder-white/30"
+                    placeholder="例如: 酒馆, 老板, 饮料"
+                  />
+                </div>
+              </div>
+
+              {/* Right Column */}
+              <div className="space-y-5">
+                <div className="flex items-center justify-between bg-black/20 rounded-xl p-4 border border-white/5 h-[76px]">
+                  <div>
+                    <div className="text-sm font-medium text-white/90">条目状态 (Enabled)</div>
+                    <div className="text-[11px] text-white/40 mt-1">控制是否将此条目注入提示词</div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer select-none shrink-0">
+                    <input 
+                      type="checkbox" 
+                      checked={editForm.enabled} 
+                      onChange={e => setEditForm({...editForm, enabled: e.target.checked})}
+                      className="sr-only peer" 
+                    />
+                    <div className="w-11 h-6 bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-500 shadow-inner"></div>
+                  </label>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-white/70 mb-1.5 pl-1">插入顺序 (Insertion Order)</label>
+                  <input 
+                    type="number" 
+                    value={editForm.insertion_order} 
+                    onChange={e => setEditForm({...editForm, insertion_order: e.target.value})}
+                    className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-purple-500/50 focus:bg-black/60 transition-all font-mono text-white/90"
+                    placeholder="例如: 50"
+                  />
+                </div>
+              </div>
             </div>
 
-            <div>
-              <label className="block text-xs text-white/60 mb-1">关键词 (用逗号分隔)</label>
-              <input 
-                type="text" 
-                value={editForm.keys} 
-                onChange={e => setEditForm({...editForm, keys: e.target.value})}
-                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
-                placeholder="例如: 酒馆, 老板, 饮料"
-              />
-            </div>
-
-            <div className="flex-1 flex flex-col min-h-0">
-              <label className="block text-xs text-white/60 mb-1">内容</label>
+            <div className="flex-1 flex flex-col min-h-0 pt-4 border-t border-white/5">
+              <label className="block text-xs font-medium text-white/70 mb-2 pl-1 flex items-center justify-between">
+                <span>条目内容 (Content)</span>
+                <span className="text-white/30 font-normal">{editForm.content?.length || 0} 字</span>
+              </label>
               <textarea 
                 value={editForm.content} 
                 onChange={e => setEditForm({...editForm, content: e.target.value})}
-                className="w-full flex-1 min-h-[150px] bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500 resize-none"
-                placeholder="条目内容..."
+                className="w-full flex-1 min-h-[200px] bg-black/20 border border-white/10 rounded-xl px-5 py-4 text-sm focus:outline-none focus:border-purple-500/50 focus:bg-black/40 transition-all resize-none shadow-inner leading-relaxed text-white/90 placeholder-white/20 custom-scrollbar"
+                placeholder="在此输入条目的详细内容..."
               />
             </div>
+          </div>
 
-            <div className="flex flex-col sm:flex-row gap-4">
-              <div className="flex-1">
-                <label className="block text-xs text-white/60 mb-1">插入顺序 (Insertion Order)</label>
-                <input 
-                  type="number" 
-                  value={editForm.insertion_order} 
-                  onChange={e => setEditForm({...editForm, insertion_order: e.target.value})}
-                  className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
-                />
-              </div>
-              <div className="flex items-end pb-1">
-                <label className="flex items-center gap-2 cursor-pointer bg-white/5 py-2 px-4 rounded-lg border border-white/10 w-full sm:w-auto">
-                  <input 
-                    type="checkbox" 
-                    checked={editForm.enabled} 
-                    onChange={e => setEditForm({...editForm, enabled: e.target.checked})}
-                    className="rounded border-white/10 bg-black/40 text-purple-500 focus:ring-purple-500"
-                  />
-                  <span className="text-sm">启用 (Enabled)</span>
-                </label>
-              </div>
+            <div className="flex-none p-4 sm:p-6 border-t border-white/10 flex justify-end gap-2 bg-black/20">
+              <button onClick={() => setEditingIndex(null)} className="px-5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-white font-medium text-sm transition">取消</button>
+              <button onClick={handleSave} className="px-5 py-2.5 rounded-xl bg-purple-500 hover:bg-purple-600 shadow-lg shadow-purple-500/20 text-white text-sm transition font-medium">保存</button>
             </div>
-          </div>
-
-          <div className="flex-none p-4 sm:p-6 border-t border-white/10 flex justify-end gap-2 bg-black/20">
-            <button onClick={() => setEditingIndex(null)} className="px-5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-sm transition">取消</button>
-            <button onClick={handleSave} className="px-5 py-2.5 rounded-xl bg-purple-500 hover:bg-purple-600 shadow-lg shadow-purple-500/20 text-white text-sm transition font-medium">保存</button>
-          </div>
+          </motion.div>
         </motion.div>
-      </div>
+        )}
+      </AnimatePresence>,
+      document.body
     );
   };
 
@@ -1433,13 +1564,27 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
                   </div>
                   <div 
                     className="group cursor-pointer mt-2 w-full"
-                    onClick={() => setViewingEntryIndex(i)}
+                    onClick={() => setViewingEntryIndex(viewingEntryIndex === i ? null : i)}
                   >
-                    <div className="text-white/70 text-sm line-clamp-2 break-words w-full">{entry.content || entry.entry || ''}</div>
-                    <div className="mt-1.5 text-purple-400 text-xs font-medium flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
-                      <span>阅读全文</span>
-                      <ChevronRight className="w-3 h-3" />
-                    </div>
+                    {viewingEntryIndex === i ? (
+                      <div className="text-white/90 whitespace-pre-wrap text-sm leading-relaxed pr-2 break-words w-full" onClick={e => e.stopPropagation()}>
+                        {entry.content || entry.entry || ''}
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); setViewingEntryIndex(null); }}
+                          className="mt-3 flex items-center justify-center gap-1 text-purple-400 text-sm font-medium py-1.5 hover:bg-white/5 rounded-lg transition w-full cursor-pointer"
+                        >
+                          <ChevronUp className="w-4 h-4" /> 收起 
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="text-white/70 text-sm line-clamp-2 break-words w-full">{entry.content || entry.entry || ''}</div>
+                        <div className="mt-1.5 text-purple-400 text-xs font-medium flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                          <span>展开全文</span>
+                          <ChevronDown className="w-3 h-3" />
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1448,22 +1593,7 @@ function WorldbookViewer({ book, onUpdate, onDelete }: { book: any, onUpdate: (n
         )}
       </div>
 
-      <AnimatePresence>
-        {viewingEntryIndex !== null && (
-          <FullScreenTextModal 
-            title={(() => {
-              const entry = entries[viewingEntryIndex];
-              const keysArray = entry.key || entry.keys || [];
-              return Array.isArray(keysArray) ? keysArray.join(', ') : keysArray || '无关键词';
-            })()} 
-            content={entries[viewingEntryIndex].content || entries[viewingEntryIndex].entry || ''} 
-            onClose={() => setViewingEntryIndex(null)} 
-          />
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
-        {renderEditForm()}
-      </AnimatePresence>
+      {renderEditForm()}
     </div>
   );
 }
