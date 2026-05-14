@@ -23,6 +23,7 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
   const [editNoteContent, setEditNoteContent] = useState('');
   const [customTags, setCustomTags] = useState<string[]>([]);
   const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
+  const [userAvatar, setUserAvatar] = useState<string | null>(null);
 
   useEffect(() => {
     setScrollParent(document.getElementById('character-detail-scroll-container'));
@@ -51,7 +52,42 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
         setCustomTags(JSON.parse(savedTags));
       } catch (e) {}
     }
+    const savedAvatar = localStorage.getItem('chatViewer_userAvatar');
+    if (savedAvatar) {
+      setUserAvatar(savedAvatar);
+    }
   }, [characterId]);
+
+  const formatCustomTags = (text: string) => {
+    if (!text) return '';
+    let result = text;
+    // Format various Think tags: <think>, [think], {{think}}
+    const thinkRegex = /(?:<|&lt;|\[+|\\\[+|\{+)\s*(?:think|thought|thinking)\s*(?:>|&gt;|\]+|\\\]+|\}+)([\s\S]*?)(?:<|&lt;|\[+|\\\[+|\{+)\/\s*(?:think|thought|thinking)\s*(?:>|&gt;|\]+|\\\]+|\}+)/gi;
+    result = result.replace(thinkRegex, '<details class="text-sm bg-white/5 border border-white/10 rounded-lg p-2 my-2 w-full max-w-full overflow-hidden"><summary class="cursor-pointer font-bold text-gray-400 select-none">🤔 思维链</summary><div class="mt-2 text-gray-300 break-words whitespace-pre-wrap max-w-full overflow-x-auto">$1</div></details>');
+    
+    // Format doggy_status_panel
+    const statusPanelHtml = '<div class="my-3 mx-1 bg-white/[0.03] border border-white/10 rounded-xl p-3 shadow-inner backdrop-blur-sm"><div class="flex items-center gap-1.5 mb-1.5 opacity-60"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg><span class="text-xs font-bold uppercase tracking-wider">Status Bar</span></div><div class="text-white/80 whitespace-pre-wrap font-mono text-[13px] leading-relaxed break-words overflow-x-auto">$1</div></div>';
+    
+    result = result.replace(/(?:<|&lt;|\[+|\{+)\s*doggy_status_panel\s*(?:>|&gt;|\]+|\}+)([\s\S]*?)(?:<|&lt;|\[+|\{+)\/\s*doggy_status_panel\s*(?:>|&gt;|\]+|\}+)/gi, statusPanelHtml);
+
+    // Also deal with standalone {状态栏 | ...} without xml tags
+    result = result.replace(/\{状态栏\s*\|([\s\S]*?)\}/gi, statusPanelHtml);
+
+    // Apply user defined custom tags
+    const processedTags = new Set(customTags.map(t => t.replace(/^<*\/?|\/?>*$/g, '').replace(/^\[*\/?|\/?\]*$/g, '').replace(/^\{*\/?|\/?\}*$/g, '').trim()).filter(Boolean));
+    
+    processedTags.forEach(tag => {
+      const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pairedRe = new RegExp(`(?:<|&lt;|\\[|\\{)\\s*${escapedTag}(?:\\s+(?:[^>&\\]\\}]+))?(?:>|&gt;|\\]|\\})([\\s\\S]*?)(?:<|&lt;|\\[|\\{)\\/\\s*${escapedTag}\\s*(?:>|&gt;|\\]|\\})`, 'gi');
+      result = result.replace(pairedRe, `<details class="text-sm bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-2 my-2 w-full max-w-full overflow-hidden"><summary class="cursor-pointer font-bold text-indigo-400 select-none">${tag}</summary><div class="mt-2 text-indigo-300/80 whitespace-pre-wrap break-words max-w-full overflow-x-auto">$1</div></details>`);
+      const singleRe = new RegExp(`(?:<|&lt;|\\[|\\{)\\s*${escapedTag}(?:\\s+(?:[^>&\\]\\}]+))?\\/?\\s*(?:>|&gt;|\\]|\\})`, 'gi');
+      result = result.replace(singleRe, `<div class="text-sm border-l-2 border-indigo-500/50 pl-3 py-1 my-2 text-indigo-400/80 italic text-xs"><span class="font-bold">&lt;${tag}&gt;</span></div>`);
+      const singleCloseRe = new RegExp(`(?:<|&lt;|\\[|\\{)\\/\\s*${escapedTag}\\s*(?:>|&gt;|\\]|\\})`, 'gi');
+      result = result.replace(singleCloseRe, `<div class="text-sm border-l-2 border-indigo-500/50 pl-3 py-1 my-2 text-indigo-400/80 italic text-xs"><span class="font-bold">&lt;/${tag}&gt;</span></div>`);
+    });
+
+    return result;
+  };
 
   const handleSaveNote = async (chatMeta: any) => {
     const { getChatById } = await import('../lib/db');
@@ -73,13 +109,19 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
     }
   };
 
-  const handleDelete = async (id: string, e: React.MouseEvent) => {
+  const [deleteChatId, setDeleteChatId] = useState<string | null>(null);
+
+  const confirmDeleteChat = async () => {
+    if (!deleteChatId) return;
+    setChats(prev => prev.filter(c => c.id !== deleteChatId));
+    if (selectedChat?.id === deleteChatId) setSelectedChat(null);
+    await deleteChat(deleteChatId);
+    setDeleteChatId(null);
+  };
+
+  const handleDelete = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if(confirm('确定要删除这条聊天记录吗？')) {
-      setChats(prev => prev.filter(c => c.id !== id));
-      if (selectedChat?.id === id) setSelectedChat(null);
-      await deleteChat(id);
-    }
+    setDeleteChatId(id);
   };
 
   const handleFileUpload = async (files: FileList | File[]) => {
@@ -380,13 +422,13 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.97, y: 20 }}
           transition={{ duration: 0.3, ease: [0.23, 1, 0.32, 1] }}
-          className="fixed inset-0 z-[120] bg-slate-900 flex flex-col p-4 sm:p-6"
+          className="fixed inset-0 z-[120] bg-slate-900/80 backdrop-blur-sm flex flex-col p-4 sm:p-6 [.light-theme_&]:bg-black/20"
         >
-          <div className="max-w-4xl mx-auto w-full flex flex-col h-full bg-slate-900/50 rounded-2xl border border-white/10 overflow-hidden shadow-2xl">
-            <div className="p-4 bg-white/5 border-b border-white/10 flex justify-between items-center shrink-0">
+          <div className="max-w-4xl mx-auto w-full flex flex-col h-full bg-slate-900/80 backdrop-blur-xl rounded-3xl border border-white/10 overflow-hidden shadow-2xl ring-1 ring-white/5 [.light-theme_&]:bg-white/80 [.light-theme_&]:backdrop-blur-3xl [.light-theme_&]:border-black/5 [.light-theme_&]:shadow-[0_8px_40px_rgba(0,0,0,0.1)]">
+            <div className="p-4 sm:p-5 border-b border-white/10 flex justify-between items-center shrink-0 bg-transparent">
               <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-                <button onClick={() => setSelectedChat(null)} className="flex items-center gap-1.5 text-white/50 hover:text-white transition whitespace-nowrap shrink-0 p-2">
-                  <ArrowLeft className="w-5 h-5" /> 
+                <button onClick={() => setSelectedChat(null)} className="flex items-center justify-center w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition shrink-0">
+                  <ArrowLeft className="w-4 h-4" /> 
                 </button>
                 <h3 className="text-base sm:text-lg font-medium text-white truncate" title={selectedChat.name}>{selectedChat.name}</h3>
               </div>
@@ -410,14 +452,20 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
                       <div className={`flex gap-4 pb-6 mt-4 ${msg.is_user ? 'flex-row-reverse' : ''} overflow-hidden w-full min-w-0 px-4 sm:px-6`}>
                         <div className="shrink-0 pt-1">
                           {msg.is_user ? (
-                            <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20 text-white font-bold">
-                              {msg.name?.charAt(0) || 'U'}
-                            </div>
+                            userAvatar ? (
+                              <div className="w-10 h-10 rounded-full border border-white/20 bg-black/30 flex items-center justify-center shrink-0 shadow-lg overflow-hidden">
+                                <img src={userAvatar} alt="user avatar" className="w-full h-full object-cover" />
+                              </div>
+                            ) : (
+                              <div className="w-10 h-10 rounded-full bg-white/10 text-slate-300 border border-white/20 flex items-center justify-center shadow-lg font-bold [.light-theme_&]:bg-blue-600 [.light-theme_&]:text-white [.light-theme_&]:border-transparent [.light-theme_&]:shadow-blue-500/20">
+                                {msg.name?.charAt(0) || 'U'}
+                              </div>
+                            )
                           ) : (
                             avatar ? (
                               <img src={avatar} alt="avatar" className="w-10 h-10 rounded-full object-cover shadow-lg border border-white/10" />
                             ) : (
-                              <div className="w-10 h-10 rounded-full bg-indigo-900 flex items-center justify-center shadow-lg border border-indigo-500/30 text-indigo-200 font-bold">
+                              <div className="w-10 h-10 rounded-full bg-white/[0.05] flex items-center justify-center shadow-sm border border-white/10 text-slate-200 font-bold [.light-theme_&]:bg-indigo-900 [.light-theme_&]:text-indigo-200 [.light-theme_&]:border-indigo-500/30 [.light-theme_&]:shadow-lg">
                                 {msg.name?.charAt(0) || 'AI'}
                               </div>
                             )
@@ -425,25 +473,25 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
                         </div>
                         
                         <div className={`max-w-[85%] md:max-w-[80%] min-w-0 ${msg.is_user ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
-                          <div className={`flex items-center gap-2 text-xs ${msg.is_user ? 'flex-row-reverse text-blue-200/70' : 'text-slate-400'}`}>
+                          <div className={`flex items-center gap-2 text-xs ${msg.is_user ? 'flex-row-reverse text-slate-400 [.light-theme_&]:text-blue-600' : 'text-slate-400 [.light-theme_&]:text-slate-500'}`}>
                             <span className="font-semibold">{msg.name || (msg.is_user ? 'User' : 'Character')}</span>
                             {dateString && <span>· {dateString}</span>}
                           </div>
                           
                           <div className={`px-5 py-3 rounded-2xl max-w-full min-w-0 overflow-x-auto ${
                             msg.is_user 
-                              ? 'bg-blue-600/90 text-white rounded-tr-sm backdrop-blur-md border border-blue-500/30' 
-                              : 'bg-indigo-950/80 text-indigo-100 rounded-tl-sm border border-indigo-500/20 backdrop-blur-md'
+                              ? 'bg-white/[0.08] text-white border border-white/[0.15] rounded-tr-sm shadow-sm backdrop-blur-md [.light-theme_&]:bg-blue-600/90 [.light-theme_&]:text-white [.light-theme_&]:border-blue-500/30' 
+                              : 'bg-white/[0.04] text-slate-200 rounded-tl-sm border border-white/[0.05] shadow-sm backdrop-blur-md [.light-theme_&]:bg-indigo-950/80 [.light-theme_&]:text-indigo-100 [.light-theme_&]:border-indigo-500/20'
                           }`}>
-                             <div className="prose prose-invert prose-sm max-w-none 
+                             <div className={`prose prose-sm max-w-none 
                                 prose-headings:text-white/90 prose-p:leading-relaxed 
                                 prose-a:text-blue-400 hover:prose-a:text-blue-300
                                 prose-strong:text-white prose-code:text-pink-300
                                 prose-pre:bg-black/30 prose-pre:max-w-full
-                                [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words w-full"
+                                [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words w-full \n                                 ${msg.is_user ? 'prose-p:text-slate-100 text-slate-100 [.light-theme_&]:prose-p:text-white [.light-theme_&]:text-white' : 'prose-invert'}`}
                               >
                               <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
-                                  {applyRegexes(msg.mes || '')}
+                                  {formatCustomTags(applyRegexes(msg.mes || ''))}
                                 </ReactMarkdown>
                              </div>
                           </div>
@@ -454,6 +502,44 @@ export function CharacterChatsSection({ characterId, characterName, regexScripts
               />
             </div>
           </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+
+    {/* Delete Chat Confirmation Modal */}
+    <AnimatePresence>
+      {deleteChatId && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          onClick={() => setDeleteChatId(null)}
+        >
+          <motion.div
+            initial={{ scale: 0.95, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.95, opacity: 0 }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border border-white/10 rounded-2xl p-6 max-w-sm w-full shadow-2xl"
+          >
+            <h3 className="text-xl font-bold mb-2 text-white">删除聊天记录？</h3>
+            <p className="text-slate-400 mb-6">此操作无法撤销，确定要删除这条聊天记录吗？</p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setDeleteChatId(null)}
+                className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white transition"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmDeleteChat}
+                className="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white transition shadow-lg shadow-red-500/20"
+              >
+                删除
+              </button>
+            </div>
+          </motion.div>
         </motion.div>
       )}
     </AnimatePresence>
