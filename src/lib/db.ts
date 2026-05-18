@@ -34,6 +34,17 @@ export interface ChatLog {
   note?: string;
 }
 
+export interface ChatMetadata {
+  id: string;
+  characterId: string;
+  name: string;
+  createdAt: number;
+  note?: string;
+  messageCount: number;
+  firstAiName?: string;
+  lastMessagePreview?: string;
+}
+
 interface TavernDB extends DBSchema {
   characters: {
     key: string;
@@ -52,6 +63,11 @@ interface TavernDB extends DBSchema {
   chats: {
     key: string;
     value: ChatLog;
+    indexes: { 'by-character': string; 'by-date': number };
+  };
+  chat_metadata: {
+    key: string;
+    value: ChatMetadata;
     indexes: { 'by-character': string; 'by-date': number };
   };
   memos: {
@@ -76,8 +92,8 @@ let dbPromise: Promise<IDBPDatabase<TavernDB>>;
 
 export function initDB() {
   if (!dbPromise) {
-    dbPromise = openDB<TavernDB>('tavern-manager-v2', 5, {
-      upgrade(db, oldVersion, newVersion, transaction) {
+    dbPromise = openDB<TavernDB>('tavern-manager-v2', 6, {
+      async upgrade(db, oldVersion, newVersion, transaction) {
         if (oldVersion < 1) {
           const store = db.createObjectStore('characters', { keyPath: 'id' });
           store.createIndex('by-date', 'createdAt');
@@ -101,6 +117,34 @@ export function initDB() {
           const memoStore = db.createObjectStore('memos', { keyPath: 'id' });
           memoStore.createIndex('by-character', 'characterId');
           memoStore.createIndex('by-date', 'createdAt');
+        }
+        if (oldVersion < 6) {
+          const metaStore = db.createObjectStore('chat_metadata', { keyPath: 'id' });
+          metaStore.createIndex('by-character', 'characterId');
+          metaStore.createIndex('by-date', 'createdAt');
+          
+          // Prepopulate chat_metadata from existing chats
+          const chatStore = transaction.objectStore('chats');
+          let cursor = await chatStore.openCursor();
+          while (cursor) {
+            const val = cursor.value;
+            const aiMsg = val.messages?.find((m: any) => !m.is_user && m.name);
+            const lastMsg = val.messages?.length ? val.messages[val.messages.length - 1] : null;
+            let preview = lastMsg?.mes || '';
+            if (preview.length > 200) preview = preview.substring(0, 200) + '...';
+            
+            metaStore.put({
+              id: val.id,
+              characterId: val.characterId,
+              name: val.name,
+              createdAt: val.createdAt,
+              note: val.note,
+              messageCount: val.messages?.length || 0,
+              firstAiName: aiMsg?.name,
+              lastMessagePreview: preview,
+            });
+            cursor = await cursor.continue();
+          }
         }
       },
     });
@@ -758,48 +802,56 @@ export async function getChatById(id: string): Promise<ChatLog | undefined> {
   return db.get('chats', id);
 }
 
-export async function getAllChatsMetadata(): Promise<(Omit<ChatLog, 'messages'> & { messageCount: number, firstAiName?: string, lastMessagePreview?: string })[]> {
+export async function getAllChatsMetadata(): Promise<ChatMetadata[]> {
   const db = await initDB();
-  const tx = db.transaction('chats', 'readonly');
-  const store = tx.objectStore('chats');
-  let cursor = await store.openCursor();
-  const res = [];
-  while (cursor) {
-    const val = cursor.value;
-    const aiMsg = val.messages?.find((m: any) => !m.is_user && m.name);
-    const lastMsg = val.messages?.length ? val.messages[val.messages.length - 1] : null;
-    let preview = lastMsg?.mes || '';
-    if (preview.length > 200) preview = preview.substring(0, 200) + '...';
-    res.push({
-      id: val.id,
-      characterId: val.characterId,
-      name: val.name,
-      createdAt: val.createdAt,
-      note: val.note,
-      messageCount: val.messages?.length || 0,
-      firstAiName: aiMsg?.name,
-      lastMessagePreview: preview,
-    });
-    cursor = await cursor.continue();
-  }
-  return res;
+  return db.getAll('chat_metadata');
+}
+
+function computeChatMetadata(chat: ChatLog): ChatMetadata {
+  const aiMsg = chat.messages?.find((m: any) => !m.is_user && m.name);
+  const lastMsg = chat.messages?.length ? chat.messages[chat.messages.length - 1] : null;
+  let preview = lastMsg?.mes || '';
+  if (preview.length > 200) preview = preview.substring(0, 200) + '...';
+  
+  return {
+    id: chat.id,
+    characterId: chat.characterId,
+    name: chat.name,
+    createdAt: chat.createdAt,
+    note: chat.note,
+    messageCount: chat.messages?.length || 0,
+    firstAiName: aiMsg?.name,
+    lastMessagePreview: preview,
+  };
 }
 
 export async function saveChat(chat: ChatLog): Promise<void> {
   const db = await initDB();
-  await db.put('chats', chat);
+  const tx = db.transaction(['chats', 'chat_metadata'], 'readwrite');
+  await tx.objectStore('chats').put(chat);
+  await tx.objectStore('chat_metadata').put(computeChatMetadata(chat));
+  await tx.done;
 }
 
 export async function saveChatsBulk(chats: ChatLog[]): Promise<void> {
   const db = await initDB();
-  const tx = db.transaction('chats', 'readwrite');
-  await Promise.all(chats.map(chat => tx.store.put(chat)));
+  const tx = db.transaction(['chats', 'chat_metadata'], 'readwrite');
+  const chatStore = tx.objectStore('chats');
+  const metaStore = tx.objectStore('chat_metadata');
+  
+  chats.forEach(chat => {
+    chatStore.put(chat);
+    metaStore.put(computeChatMetadata(chat));
+  });
   await tx.done;
 }
 
 export async function deleteChat(id: string): Promise<void> {
   const db = await initDB();
-  await db.delete('chats', id);
+  const tx = db.transaction(['chats', 'chat_metadata'], 'readwrite');
+  await tx.objectStore('chats').delete(id);
+  await tx.objectStore('chat_metadata').delete(id);
+  await tx.done;
 }
 
 export async function getMemosForCharacter(characterId: string): Promise<CharacterMemo[]> {
