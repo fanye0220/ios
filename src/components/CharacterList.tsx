@@ -1740,7 +1740,7 @@ function CharacterCardItem({
       isMounted = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [char.avatarBlob, char.hasBlobsSeparated, char.id, isInView]);
+  }, [char.avatarBlob, char.hasBlobsSeparated, char.id, isInView, char.updatedAt]);
 
   const handleTouchStart = () => {
     isLongPress.current = false;
