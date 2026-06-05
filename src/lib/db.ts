@@ -434,14 +434,27 @@ export async function getCharacters(
   const paginatedMeta = allMeta.slice((page - 1) * pageSize, page * pageSize);
   
   // Now fetch full objects ONLY for the paginated slice
-  const fetchTx = db.transaction('characters', 'readonly');
-  const fetchStore = fetchTx.store;
   const characters: CharacterCard[] = [];
   
-  for (const meta of paginatedMeta) {
-    const fullChar = await fetchStore.get(meta.id);
-    if (fullChar) {
-      characters.push(fullChar);
+  // Optimization for large page sizes: fetch all and filter in memory, or fetch in parallel chunks
+  if (paginatedMeta.length > 50) {
+    const allChars = await db.getAll('characters');
+    const charMap = new Map();
+    for (const c of allChars) {
+      charMap.set(c.id, c);
+    }
+    for (const meta of paginatedMeta) {
+      const fullChar = charMap.get(meta.id);
+      if (fullChar) characters.push(fullChar);
+    }
+  } else {
+    const fetchTx = db.transaction('characters', 'readonly');
+    const fetchStore = fetchTx.store;
+    for (const meta of paginatedMeta) {
+      const fullChar = await fetchStore.get(meta.id);
+      if (fullChar) {
+        characters.push(fullChar);
+      }
     }
   }
   
@@ -533,6 +546,18 @@ export async function deleteTag(tagToDelete: string): Promise<void> {
 export async function getCharacterBlob(id: string) {
   const db = await initDB();
   return await db.get('blobs', id);
+}
+
+export async function getUsedOriginalFileNames(): Promise<Set<string>> {
+  const db = await initDB();
+  const blobs = await db.getAll('blobs');
+  const usedNames = new Set<string>();
+  for (const blob of blobs) {
+    if (blob.originalFile && blob.originalFile.name) {
+      usedNames.add(blob.originalFile.name);
+    }
+  }
+  return usedNames;
 }
 
 export async function getCharacter(id: string): Promise<CharacterCard | undefined> {
@@ -708,97 +733,154 @@ export interface DuplicateGroup {
   characters: DuplicateCharacter[];
 }
 
+function computeHashAndLength(str: string): { hash: number, length: number } {
+  if (!str) return { hash: 0, length: 0 };
+  let hash = 2166136261;
+  let len = 0;
+  for (let i = 0; i < str.length; i++) {
+    const charCode = str.charCodeAt(i);
+    if (charCode <= 32 && (charCode === 32 || charCode === 9 || charCode === 10 || charCode === 13)) {
+      continue;
+    }
+    hash ^= charCode;
+    hash = Math.imul(hash, 16777619);
+    len++;
+  }
+  return { hash: hash >>> 0, length: len };
+}
+
 export async function findDuplicates(): Promise<DuplicateGroup[]> {
   const db = await initDB();
   const precomputed: any[] = [];
   
   const tx = db.transaction('characters', 'readonly');
-  const store = tx.store;
-  let cursor = await store.openCursor();
+  const allCharacters = await tx.store.getAll();
+  const charMap = new Map<string, CharacterCard>();
   
-  while (cursor) {
-    const char = cursor.value;
+  for (const char of allCharacters) {
     if (!char.deletedAt) {
+      charMap.set(char.id, char);
       const data = char.data?.data || char.data || {};
       const firstMes = data.first_mes || '';
       const desc = data.description || '';
       const name = (char.name || data.name || '').trim().toLowerCase();
       
+      const descInfo = computeHashAndLength(desc);
+      const firstInfo = computeHashAndLength(firstMes);
+      
       precomputed.push({
         id: char.id,
         name,
-        firstMes,
-        desc,
-        descClean: desc.replace(/\s+/g, ''),
-        firstClean: firstMes.replace(/\s+/g, '')
+        descHash: descInfo.hash,
+        descLen: descInfo.length,
+        firstHash: firstInfo.hash,
+        firstLen: firstInfo.length
       });
     }
-    cursor = await cursor.continue();
   }
   
-  const groups: string[][] = [];
-  const processedIds = new Set<string>();
+  const buckets = new Map<string, number[]>();
   
   for (let i = 0; i < precomputed.length; i++) {
-    const itemA = precomputed[i];
-    if (processedIds.has(itemA.id)) continue;
+    const c = precomputed[i];
+    const keys: string[] = [];
     
-    const duplicates: string[] = [itemA.id];
-    
-    for (let j = i + 1; j < precomputed.length; j++) {
-      const itemB = precomputed[j];
-      if (processedIds.has(itemB.id)) continue;
-      
-      let isDup = false;
-      
-      if (itemA.name && itemB.name && itemA.name === itemB.name) {
-        if (itemA.descClean && itemB.descClean && itemA.descClean === itemB.descClean) {
-          isDup = true;
-        } else if (itemA.firstClean && itemB.firstClean && itemA.firstClean === itemB.firstClean) {
-          isDup = true;
-        } else if (!itemA.descClean && !itemB.descClean && !itemA.firstClean && !itemB.firstClean) {
-          isDup = true;
-        }
-      } else {
-        if (itemA.descClean && itemB.descClean && itemA.firstClean && itemB.firstClean && 
-            itemA.descClean === itemB.descClean && itemA.firstClean === itemB.firstClean && 
-            itemA.descClean.length > 50) {
-          isDup = true;
-        }
-      }
-      
-      if (isDup) {
-        duplicates.push(itemB.id);
-        processedIds.add(itemB.id);
-      }
+    if (c.name) {
+      if (c.descLen > 0) keys.push(`N_D:${c.name}:${c.descHash}`);
+      if (c.firstLen > 0) keys.push(`N_F:${c.name}:${c.firstHash}`);
+      if (c.descLen === 0 && c.firstLen === 0) keys.push(`N_E:${c.name}`);
+    }
+    if (c.descLen > 50 && c.firstLen > 0) {
+      keys.push(`D_F:${c.descHash}:${c.firstHash}`);
     }
     
-    if (duplicates.length > 1) {
-      processedIds.add(itemA.id);
-      groups.push(duplicates);
+    for (const key of keys) {
+      let list = buckets.get(key);
+      if (!list) {
+        list = [];
+        buckets.set(key, list);
+      }
+      list.push(i);
+    }
+    
+    if (i % 500 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  const parent = new Int32Array(precomputed.length);
+  for (let i = 0; i < precomputed.length; i++) parent[i] = i;
+  
+  const find = (i: number): number => {
+    if (parent[i] === i) return i;
+    return parent[i] = find(parent[i]);
+  };
+  
+  const union = (i: number, j: number) => {
+    const rootI = find(i);
+    const rootJ = find(j);
+    if (rootI !== rootJ) {
+      parent[rootI] = rootJ;
+    }
+  };
+
+  for (const list of buckets.values()) {
+    if (list.length > 1) {
+      for (let j = 1; j < list.length; j++) {
+        union(list[0], list[j]);
+      }
+    }
+  }
+
+  const groupsMap = new Map<number, string[]>();
+  for (let i = 0; i < precomputed.length; i++) {
+    const root = find(i);
+    let group = groupsMap.get(root);
+    if (!group) {
+      group = [];
+      groupsMap.set(root, group);
+    }
+    group.push(precomputed[i].id);
+  }
+
+  const groups: string[][] = [];
+  for (const group of groupsMap.values()) {
+    if (group.length > 1) {
+      groups.push(group);
     }
   }
   
   const finalGroups: DuplicateGroup[] = [];
-  const fetchTx = db.transaction('characters', 'readonly');
-  const fetchStore = fetchTx.store;
+  
+  
+  if (groups.length > 0) {
+    const blobsTx = db.transaction('blobs', 'readonly');
+    const blobsStore = blobsTx.store;
+    const blobPromises: Promise<void>[] = [];
+    
+    for (const groupIds of groups) {
+      for (const id of groupIds) {
+        const char = charMap.get(id);
+        if (char && char.hasBlobsSeparated) {
+             const p = blobsStore.get(char.id).then(blobs => {
+                if (blobs) {
+                  char.avatarBlob = blobs.avatarBlob;
+                  char.originalFile = blobs.originalFile;
+                  char.avatarHistory = blobs.avatarHistory;
+                }
+             });
+             blobPromises.push(p);
+        }
+      }
+    }
+    await Promise.all(blobPromises);
+  }
   
   for (const groupIds of groups) {
     const groupChars: CharacterCard[] = [];
     for (const id of groupIds) {
-      const char = await fetchStore.get(id);
+      const char = charMap.get(id);
       if (char) groupChars.push(char);
-    }
-    
-    for (const char of groupChars) {
-      if (char.hasBlobsSeparated) {
-        const blobs = await db.get('blobs', char.id);
-        if (blobs) {
-          char.avatarBlob = blobs.avatarBlob;
-          char.originalFile = blobs.originalFile;
-          char.avatarHistory = blobs.avatarHistory;
-        }
-      }
     }
     
     const sorted = [...groupChars].sort((a, b) => a.createdAt - b.createdAt);
