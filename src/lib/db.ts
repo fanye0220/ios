@@ -1085,6 +1085,18 @@ export async function deleteChat(id: string): Promise<void> {
   await tx.done;
 }
 
+export async function deleteChatsBulk(ids: string[]): Promise<void> {
+  const db = await initDB();
+  const tx = db.transaction(['chats', 'chat_metadata'], 'readwrite');
+  const chatStore = tx.objectStore('chats');
+  const metaStore = tx.objectStore('chat_metadata');
+  for (const id of ids) {
+    chatStore.delete(id);
+    metaStore.delete(id);
+  }
+  await tx.done;
+}
+
 export async function getMemosForCharacter(characterId: string): Promise<CharacterMemo[]> {
   const db = await initDB();
   const memos = await db.getAllFromIndex('memos', 'by-character', characterId);
