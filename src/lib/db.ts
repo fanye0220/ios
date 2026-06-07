@@ -238,7 +238,9 @@ export async function resolveFolderPath(folderId?: string | null): Promise<strin
   
   if (pathParts.length === 0) return defaultUncategorized;
   return pathParts.join('/');
-}(pathParts: string[]): Promise<string | undefined> {
+}
+
+export async function getOrCreateNestedFolder(pathParts: string[]): Promise<string | undefined> {
   if (pathParts.length === 0) return undefined;
   let currentParentId: string | undefined = undefined;
   
