@@ -1,22 +1,49 @@
 import { createAvatar } from '@dicebear/core';
 import { bottts } from '@dicebear/collection';
 
-export function getFallbackAvatar(seed: string): string {
-  const avatar = createAvatar(bottts, {
-    seed: seed,
-  });
-  
-  const svgStr = avatar.toString();
-  // Properly encode unicode (e.g., em-dashes in SVG metadata) to base64
+export function getFallbackAvatar(seed?: string | null, category?: string): string {
+  const cat = (category || '').toLowerCase();
+  const trimmed = typeof seed === 'string' ? seed.trim() : '';
+  const cleanSeed = (trimmed && trimmed !== 'default') ? trimmed : 'robot_' + Math.random().toString(36).substring(2, 10);
+
   try {
-    const encoded = encodeURIComponent(svgStr).replace(/%([0-9A-F]{2})/g,
-        (match, p1) => String.fromCharCode(parseInt(p1, 16))
-    );
-    const base64 = typeof window !== 'undefined' ? window.btoa(encoded) : btoa(encoded);
-    return `data:image/svg+xml;base64,${base64}`;
-  } catch (err) {
+    const avatar = createAvatar(bottts, {
+      seed: cleanSeed,
+      size: 100
+    });
+    const svgStr = avatar.toString();
+    // Use standard URL encoding for SVG data URI, which has the widest compatibility across mobile WebViews
     return `data:image/svg+xml,${encodeURIComponent(svgStr)}`;
+  } catch {
+    const fallbackRobot = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g-rb" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#4f46e5"/></linearGradient></defs><rect width="100" height="100" rx="24" fill="url(#g-rb)"/><rect x="28" y="32" width="44" height="36" rx="10" fill="#ffffff"/><circle cx="40" cy="48" r="5" fill="#4f46e5"/><circle cx="60" cy="48" r="5" fill="#4f46e5"/><rect x="42" y="58" width="16" height="4" rx="2" fill="#4f46e5"/><rect x="47" y="22" width="6" height="10" rx="3" fill="#ffffff"/><circle cx="50" cy="20" r="4" fill="#ffffff"/></svg>';
+    return `data:image/svg+xml,${encodeURIComponent(fallbackRobot)}`;
   }
+}
+
+export function resolveAvatarUrl(avatarFallback: string | undefined | null, seed?: string | null, category?: string): string {
+  if (
+    avatarFallback &&
+    typeof avatarFallback === 'string' &&
+    avatarFallback.trim().length > 0 &&
+    avatarFallback !== 'undefined' &&
+    avatarFallback !== 'null' &&
+    !avatarFallback.includes('api.dicebear.com') &&
+    (avatarFallback.startsWith('data:image/') || 
+     avatarFallback.startsWith('http://') || 
+     avatarFallback.startsWith('https://') || 
+     avatarFallback.startsWith('blob:'))
+  ) {
+    // 强制修复本地 IndexedDB 里残留的老版本带有 charset=utf-8 / base64 声明的 bug 图片
+    if (avatarFallback.startsWith('data:image/svg+xml;charset=utf-8,') || avatarFallback.startsWith('data:image/svg+xml;base64,')) {
+      return getFallbackAvatar(seed, category);
+    }
+    // 修复历史下载中因种子为 default 或缺失而导致的单一红色机器人 (#f4511e)
+    if ((avatarFallback.includes('%23f4511e') || avatarFallback.includes('#f4511e') || avatarFallback.includes('seed=default')) && seed && seed !== 'default') {
+      return getFallbackAvatar(seed, category);
+    }
+    return avatarFallback;
+  }
+  return getFallbackAvatar(seed, category);
 }
 
 /**
@@ -44,7 +71,6 @@ export async function generateThumbnail(
 
     let { width, height } = img;
     if (width <= maxSize && height <= maxSize) {
-      // 原图已经比缩略图还小, 没必要再压一遍
       return blob;
     }
     if (width > height) {
@@ -67,7 +93,6 @@ export async function generateThumbnail(
     });
     return thumbBlob || blob;
   } catch {
-    // 生成缩略图失败(比如格式不支持), 直接退回用原图, 不影响主流程
     return blob;
   } finally {
     URL.revokeObjectURL(objectUrl);

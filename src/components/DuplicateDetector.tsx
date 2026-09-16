@@ -1,4 +1,4 @@
-import { getFallbackAvatar } from '../lib/avatar';
+import { getFallbackAvatar, resolveAvatarUrl } from '../lib/avatar';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Copy, Trash2, X, AlertTriangle, CheckCircle2, Merge, MessageSquarePlus, Link, FileText, CheckCircle } from 'lucide-react';
@@ -7,8 +7,8 @@ import { getLocalImageUrl } from '../lib/appBridge';
 
 // helper for simple image url retrieval
 function CharAvatarImg({ char, className }: { char: CharacterCard, className: string }) {
-   const defaultFallback = getFallbackAvatar(char.name || char.id);
-   const [url, setUrl] = useState<string | undefined>((char.avatarUrlFallback && !char.avatarUrlFallback.includes('api.dicebear.com') ? char.avatarUrlFallback : defaultFallback));
+   const defaultFallback = getFallbackAvatar(char.name || char.id, char.tags?.join(',') || (char.isTool ? 'tool' : undefined));
+   const [url, setUrl] = useState<string | undefined>(resolveAvatarUrl(char.avatarUrlFallback, char.name || char.id));
    useEffect(() => {
      let objectUrl: string | null = null;
      let isMounted = true;
@@ -30,7 +30,7 @@ function CharAvatarImg({ char, className }: { char: CharacterCard, className: st
      }
      return () => { isMounted = false; if (objectUrl) URL.revokeObjectURL(objectUrl); }
    }, [char]);
-   return <img src={url || undefined} alt={char.name} className={className} referrerPolicy="no-referrer"  />;
+   return <img src={url || undefined} alt={char.name} className={className} referrerPolicy="no-referrer" onError={(e) => { if (e.currentTarget.src !== defaultFallback) e.currentTarget.src = defaultFallback; }} />;
 }
 
 interface Props {

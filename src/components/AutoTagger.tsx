@@ -1,4 +1,4 @@
-import { getFallbackAvatar } from '../lib/avatar';
+import { getFallbackAvatar, resolveAvatarUrl } from '../lib/avatar';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, Tag, Play, CheckCircle2, Loader2, AlertCircle, Pause, Square, PlayCircle, RefreshCw, X, ArrowRightLeft, History, ChevronDown, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -23,8 +23,8 @@ function RetagReviewCard({ item }: { item: RetagReviewItem }) {
   };
 
   const charName = item.char.data?.data?.name || item.char.data?.name || '未知角色';
-  const defaultFallback = getFallbackAvatar(charName || item.char.id);
-  const initialUrl = item.char.avatarUrlFallback && !item.char.avatarUrlFallback.includes('api.dicebear.com') ? item.char.avatarUrlFallback : defaultFallback;
+  const defaultFallback = getFallbackAvatar(charName || item.char.id, item.char.tags?.join(',') || (item.char.isTool ? 'tool' : undefined));
+  const initialUrl = resolveAvatarUrl(item.char.avatarUrlFallback, item.char.name || item.char.id);
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(initialUrl);
 
   useEffect(() => {
@@ -60,7 +60,17 @@ function RetagReviewCard({ item }: { item: RetagReviewItem }) {
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
            <div className="w-12 h-12 rounded-xl overflow-hidden shrink-0 shadow-inner ring-1 ring-white/10">
-             <img src={avatarUrl || undefined} alt={charName} className="w-full h-full object-cover" referrerPolicy="no-referrer"  />
+             <img 
+             src={avatarUrl || undefined} 
+             alt={charName} 
+             className="w-full h-full object-cover" 
+             referrerPolicy="no-referrer"
+             onError={(e) => {
+               if (e.currentTarget.src !== defaultFallback) {
+                 e.currentTarget.src = defaultFallback;
+               }
+             }}
+           />
            </div>
            <h4 className="font-bold text-lg text-white truncate">{charName}</h4>
         </div>

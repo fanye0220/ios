@@ -1,4 +1,4 @@
-import { getFallbackAvatar } from "./avatar";
+import { getFallbackAvatar, resolveAvatarUrl } from "./avatar";
 import { openDB, DBSchema, IDBPDatabase } from "idb";
 import { getLocalImageUrl, isAndroid } from "./appBridge";
 import { sanitizeChatMessages } from "./chatParse";
@@ -34,32 +34,100 @@ export function getSafeFilename(name: string): string {
 }
 
 export function getCharacterCategoryPrefix(char: any): string {
-  const rawData = char.data?.data || char.data || {};
+  const rawData = char?.data?.data || char?.data || char || {};
+  const outer = char?.data || char || {};
+
+  // Real character cards are not tool categories
+  if (isActualCharacterCard(rawData) || isActualCharacterCard(outer)) {
+    return "未归类";
+  }
+
+  // 1. Quick Reply
+  if (
+    Array.isArray(rawData) ||
+    Array.isArray(outer) ||
+    Array.isArray(rawData.qrList) ||
+    Array.isArray(outer.qrList) ||
+    Array.isArray(rawData.quick_replies) ||
+    Array.isArray(outer.quick_replies) ||
+    Array.isArray(rawData.tavern_qr_sets) ||
+    Array.isArray(outer.tavern_qr_sets) ||
+    rawData.qrList !== undefined ||
+    outer.qrList !== undefined ||
+    rawData.quick_replies !== undefined ||
+    outer.quick_replies !== undefined
+  ) {
+    return "快速回复";
+  }
+
+  // 2. Theme / Beautify
   if (
     rawData.blur_strength !== undefined ||
+    outer.blur_strength !== undefined ||
     rawData.main_text_color !== undefined ||
-    rawData.chat_display !== undefined
-  )
+    outer.main_text_color !== undefined ||
+    rawData.chat_display !== undefined ||
+    outer.chat_display !== undefined
+  ) {
     return "美化";
+  }
+
+  // 3. Preset
   if (
+    Array.isArray(rawData.prompts) ||
+    Array.isArray(outer.prompts) ||
+    Array.isArray(rawData.prompt_order) ||
+    Array.isArray(outer.prompt_order) ||
     rawData.temperature !== undefined ||
+    outer.temperature !== undefined ||
     rawData.top_p !== undefined ||
-    rawData.prompts !== undefined
-  )
+    outer.top_p !== undefined ||
+    rawData.top_k !== undefined ||
+    outer.top_k !== undefined ||
+    rawData.min_p !== undefined ||
+    outer.min_p !== undefined ||
+    rawData.repetition_penalty !== undefined ||
+    outer.repetition_penalty !== undefined ||
+    rawData.openai_max_context !== undefined ||
+    outer.openai_max_context !== undefined ||
+    rawData.openai_max_tokens !== undefined ||
+    outer.openai_max_tokens !== undefined ||
+    rawData.max_context_length !== undefined ||
+    outer.max_context_length !== undefined ||
+    rawData.preset_type !== undefined ||
+    outer.preset_type !== undefined ||
+    rawData.prompts !== undefined ||
+    outer.prompts !== undefined ||
+    rawData.system_prompt !== undefined ||
+    outer.system_prompt !== undefined
+  ) {
     return "预设";
-  if (rawData.entries !== undefined || rawData.data?.entries !== undefined)
-    return "世界书";
+  }
+
+  // 4. Worldbook
   if (
-    Array.isArray(rawData) ? rawData.length > 0 && rawData[0].label !== undefined && rawData[0].message !== undefined : (rawData.quick_replies !== undefined || rawData.qrList !== undefined) && rawData.spec !== "chara_card_v2" && rawData.spec !== "chara_card_v3" && rawData.description === undefined && rawData.first_mes === undefined && rawData.personality === undefined && rawData.mes_example === undefined && rawData.char_name === undefined && rawData.character_name === undefined && rawData.name === undefined && rawData.data?.name === undefined)
-    return "快速回复";
+    rawData.entries !== undefined ||
+    outer.entries !== undefined ||
+    rawData.data?.entries !== undefined ||
+    outer.data?.entries !== undefined
+  ) {
+    return "世界书";
+  }
+
+  // 5. Script / Tool / Regex
   if (
     rawData.run !== undefined ||
+    outer.run !== undefined ||
     rawData.type === "tool" ||
-    (rawData.type === "script" &&
-      rawData.content !== undefined &&
-      rawData.name !== undefined)
-  )
-    return "工具区";
+    outer.type === "tool" ||
+    rawData.type === "script" ||
+    outer.type === "script" ||
+    (rawData.extensions && Array.isArray(rawData.extensions.regex_scripts)) ||
+    (outer.extensions && Array.isArray(outer.extensions.regex_scripts))
+  ) {
+    return "脚本";
+  }
+
   return "未归类";
 }
 
@@ -249,12 +317,15 @@ export function initDB() {
 
 export function isActualCharacterCard(rawData: any): boolean {
   if (!rawData) return false;
+  if (Array.isArray(rawData)) return false;
+
   const outer = rawData;
   const target =
     outer.data && typeof outer.data === 'object' && !Array.isArray(outer.data)
       ? outer.data
       : outer;
 
+  // 1. Explicit V2/V3 spec character card
   if (
     outer.spec === "chara_card_v2" ||
     outer.spec === "chara_card_v3" ||
@@ -264,54 +335,127 @@ export function isActualCharacterCard(rawData: any): boolean {
     return true;
   }
 
-  // 明确的角色字段优先：即使某些卡带了 temperature/prompts 等扩展字段，
-  // 只要确实是角色卡，也不要因为工具字段而误判成预设/脚本。
+  // 2. Character-specific fields (personality, first_mes, mes_example)
   if (
-    target.personality !== undefined ||
-    target.first_mes !== undefined ||
-    target.mes_example !== undefined
+    (typeof target.first_mes === 'string' && target.first_mes.trim().length > 0) ||
+    (typeof target.personality === 'string' && target.personality.trim().length > 0) ||
+    (typeof target.mes_example === 'string' && target.mes_example.trim().length > 0)
   ) {
     return true;
   }
 
-  // 明确的非角色卡类型先排除，避免把工具/预设/世界书/美化/快捷回复误当角色。
-  const looksLikeTool =
-    Array.isArray(target) ||
-    target.type === "script" ||
-    target.type === "tool" ||
-    target.run !== undefined ||
+  // 3. Check for Quick Reply (QR) signatures -> NOT a character card
+  if (
+    Array.isArray(outer.qrList) ||
+    Array.isArray(target.qrList) ||
+    Array.isArray(outer.quick_replies) ||
+    Array.isArray(target.quick_replies) ||
+    Array.isArray(outer.tavern_qr_sets) ||
+    Array.isArray(target.tavern_qr_sets) ||
+    outer.qrList !== undefined ||
+    target.qrList !== undefined ||
+    outer.quick_replies !== undefined ||
+    target.quick_replies !== undefined
+  ) {
+    return false;
+  }
+
+  // 4. Check for Preset signatures -> NOT a character card
+  if (
+    Array.isArray(outer.prompts) ||
+    Array.isArray(target.prompts) ||
+    Array.isArray(outer.prompt_order) ||
+    Array.isArray(target.prompt_order) ||
+    outer.temperature !== undefined ||
     target.temperature !== undefined ||
+    outer.top_p !== undefined ||
     target.top_p !== undefined ||
-    target.prompts !== undefined ||
+    outer.top_k !== undefined ||
+    target.top_k !== undefined ||
+    outer.min_p !== undefined ||
+    target.min_p !== undefined ||
+    outer.repetition_penalty !== undefined ||
+    target.repetition_penalty !== undefined ||
+    outer.openai_max_context !== undefined ||
+    target.openai_max_context !== undefined ||
+    outer.openai_max_tokens !== undefined ||
+    target.openai_max_tokens !== undefined ||
+    outer.max_context_length !== undefined ||
+    target.max_context_length !== undefined ||
+    outer.preset_type !== undefined ||
+    target.preset_type !== undefined
+  ) {
+    return false;
+  }
+
+  // 5. Check for Worldbook / Lorebook signatures -> NOT a character card
+  if (
+    outer.entries !== undefined ||
     target.entries !== undefined ||
+    (outer.data && outer.data.entries !== undefined)
+  ) {
+    return false;
+  }
+
+  // 6. Check for Theme / Beautify signatures -> NOT a character card
+  if (
+    outer.blur_strength !== undefined ||
     target.blur_strength !== undefined ||
+    outer.main_text_color !== undefined ||
     target.main_text_color !== undefined ||
-    target.chat_display !== undefined ||
-    target.quick_replies !== undefined ||
-    target.qrList !== undefined;
+    outer.chat_display !== undefined ||
+    target.chat_display !== undefined
+  ) {
+    return false;
+  }
 
-  if (looksLikeTool) return false;
+  // 7. Check for Script / Regex signatures -> NOT a character card
+  if (
+    outer.run !== undefined ||
+    target.run !== undefined ||
+    outer.type === "script" ||
+    target.type === "script" ||
+    outer.type === "tool" ||
+    target.type === "tool" ||
+    (outer.extensions && Array.isArray(outer.extensions.regex_scripts)) ||
+    (target.extensions && Array.isArray(target.extensions.regex_scripts))
+  ) {
+    return false;
+  }
 
-  // 老的裸 JSON 角色卡可能只有 name + description/scenario/tags，没有 personality/first_mes。
-  const name =
+  // 8. If none of the tool signatures match, check if it has character name and description/scenario
+  const charName =
     target.name ||
     target.char_name ||
     target.character_name ||
-    target.data?.name;
+    target.data?.name ||
+    (typeof outer.name === 'string' ? outer.name : undefined);
+
   const hasCharacterContent =
     target.description !== undefined ||
     target.scenario !== undefined ||
     Array.isArray(target.tags);
 
-  return !!(name && hasCharacterContent);
+  if (charName && hasCharacterContent) {
+    return true;
+  }
+
+  return !!charName;
 }
+
+const MIGRATION_V25_FLAG = 'tavern_migration_v25_done';
 
 export async function migrateDatabase(
   onProgress?: (current: number, total: number) => void,
 ) {
+  // Check migration gate to prevent startup CPU lag and device heating
+  if (typeof localStorage !== 'undefined' && localStorage.getItem(MIGRATION_V25_FLAG) === 'true') {
+    return;
+  }
+
   const db = await initDB();
 
-  // First, just count how many need migration without loading full objects into RAM, or we just rely on counting via cursor
+  // First pass: just count how many need migration without loading full objects into RAM
   let totalToMigrate = 0;
   let txCheck = db.transaction("characters", "readonly");
   let cursorCheck = await txCheck.objectStore("characters").openCursor();
@@ -364,93 +508,40 @@ export async function migrateDatabase(
     }
   }
 
-  // Second pass: retroactively fix missing folderId for scripts/worldbooks/presets that were put in root
-  const txCheckCategories = db.transaction("characters", "readonly");
-  let cursorCat = await txCheckCategories
-    .objectStore("characters")
-    .openCursor();
-  const charsToFix: CharacterCard[] = [];
-  while (cursorCat) {
-    const char = cursorCat.value;
-    if (!char.folderId && char.data) {
-      const isChar = isActualCharacterCard(char.data);
-      const isPreset =
-        !isChar && (char.data.temperature !== undefined ||
-        char.data.prompts !== undefined ||
-        char.data.top_p !== undefined);
-      const isWorldbook =
-        !isChar && (char.data.entries !== undefined ||
-        (char.data.data && char.data.data.entries !== undefined));
-      const isTheme =
-        !isChar && (char.data.blur_strength !== undefined ||
-        char.data.main_text_color !== undefined ||
-        char.data.chat_display !== undefined);
-      const isQR = !isChar && (Array.isArray(char.data)
-        ? char.data.length > 0 &&
-          char.data[0].label !== undefined &&
-          char.data[0].message !== undefined
-        : (char.data.quick_replies !== undefined ||
-          char.data.qrList !== undefined) && !char.data.name && !char.data.data?.name && !char.data.char_name && !char.data.data?.char_name && !char.data.character_name && !char.data.data?.character_name);
-      const isScript =
-        !isChar && (char.data.run !== undefined ||
-        char.data.type === "tool" ||
-        (char.data.type === "script" &&
-          char.data.content !== undefined &&
-          char.data.name !== undefined));
-
-      if (isPreset || isWorldbook || isTheme || isQR || isScript) {
-        charsToFix.push(char);
-      }
-    }
-    cursorCat = await cursorCat.continue();
+  // Second pass: retroactively categorize tool cards into designated tool folders and refresh char_meta
+  const txScan = db.transaction("characters", "readonly");
+  let cursorScan = await txScan.objectStore("characters").openCursor();
+  const allChars: CharacterCard[] = [];
+  while (cursorScan) {
+    allChars.push(cursorScan.value);
+    cursorScan = await cursorScan.continue();
   }
 
-  if (charsToFix.length > 0) {
-    for (const char of charsToFix) {
-      const isPreset =
-        char.data.temperature !== undefined ||
-        char.data.prompts !== undefined ||
-        char.data.top_p !== undefined;
-      const isWorldbook =
-        char.data.entries !== undefined ||
-        (char.data.data && char.data.data.entries !== undefined);
-      const isTheme =
-        char.data.blur_strength !== undefined ||
-        char.data.main_text_color !== undefined ||
-        char.data.chat_display !== undefined;
-      const isQR = Array.isArray(char.data)
-        ? char.data.length > 0 &&
-          char.data[0].label !== undefined &&
-          char.data[0].message !== undefined
-        : (char.data.quick_replies !== undefined ||
-          char.data.qrList !== undefined) && !char.data.name && !char.data.data?.name && !char.data.char_name && !char.data.data?.char_name && !char.data.character_name && !char.data.data?.character_name;
-      const isScript =
-        char.data.run !== undefined ||
-        char.data.type === "tool" ||
-        (char.data.type === "script" &&
-          char.data.content !== undefined &&
-          char.data.name !== undefined);
-
-      let typeFolder = "";
-      if (isPreset) typeFolder = "预设";
-      else if (isWorldbook) typeFolder = "世界书";
-      else if (isTheme) typeFolder = "美化";
-      else if (isQR) typeFolder = "快速回复";
-      else if (isScript) typeFolder = "工具区";
-
-      if (typeFolder) {
-        const newFolderId = await getOrCreateNestedFolder([typeFolder]);
-        if (newFolderId) {
-          char.folderId = newFolderId;
-          const writeTx = db.transaction(["characters", "char_meta"], "readwrite");
-          await writeTx.objectStore("characters").put(char);
-          await writeTx.objectStore("char_meta").put(buildCharMeta(char));
-          await writeTx.done;
-        }
+  for (const char of allChars) {
+    let changed = false;
+    const category = getCharacterCategoryPrefix(char);
+    if (category !== "未归类" && (!char.folderId || char.folderId === "all")) {
+      const folderName = category === "脚本" ? "工具区" : category;
+      const targetFolderId = await getOrCreateNestedFolder([folderName]);
+      if (targetFolderId && char.folderId !== targetFolderId) {
+        char.folderId = targetFolderId;
+        changed = true;
       }
     }
-    invalidateCache();
+
+    const writeTx = db.transaction(["characters", "char_meta"], "readwrite");
+    if (changed) {
+      await writeTx.objectStore("characters").put(char);
+    }
+    await writeTx.objectStore("char_meta").put(buildCharMeta(char));
+    await writeTx.done;
   }
+
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(MIGRATION_V25_FLAG, 'true');
+  }
+
+  invalidateCache();
 }
 
 export async function getFolders(): Promise<Folder[]> {
@@ -498,59 +589,106 @@ export async function getOrCreateNestedFolder(
   return currentParentId;
 }
 
+export interface FolderPreviewItem {
+  url: string;
+  seed: string;
+  isTool?: boolean;
+  tags?: string;
+}
+
 export async function getFolderPreviews(
   folderIds: string[],
-): Promise<Record<string, string[]>> {
+): Promise<Record<string, FolderPreviewItem[]>> {
   if (folderIds.length === 0) return {};
   const db = await initDB();
-  const tx = db.transaction("char_meta", "readonly");
-  const index = tx.store.index("by-folder");
+  const previews: Record<string, FolderPreviewItem[]> = {};
 
-  const previews: Record<string, string[]> = {};
+  let allMeta: CharMeta[] = [];
+  try {
+    allMeta = await getCachedMeta();
+  } catch {}
 
   await Promise.all(
     folderIds.map(async (folderId) => {
-      let metas = await index.getAll(folderId);
-      metas = metas.filter((m) => !m.deletedAt);
-      metas.sort((a, b) => b.createdAt - a.createdAt);
+      let metas = allMeta.filter((m) => m.folderId === folderId && !m.deletedAt);
+
+      if (metas.length === 0) {
+        try {
+          const txMeta = db.transaction("char_meta", "readonly");
+          const indexMeta = txMeta.store.index("by-folder");
+          metas = await indexMeta.getAll(folderId);
+          metas = metas.filter((m) => !m.deletedAt);
+        } catch {}
+      }
+
+      if (metas.length === 0) {
+        try {
+          const txChar = db.transaction("characters", "readonly");
+          const indexChar = txChar.store.index("by-folder");
+          const chars = await indexChar.getAll(folderId);
+          metas = chars.filter((c) => !c.deletedAt).map((c) => buildCharMeta(c));
+        } catch {}
+      }
+
+      metas.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       const topMetas = metas.slice(0, 4);
 
-      // 只读取前 4 张卡的轻量 meta, 再按需取头像 blob, 不再全量读取角色 data
       const topBlobs = await Promise.all(
-        topMetas.map(async (meta) => {
+        topMetas.map(async (meta): Promise<FolderPreviewItem | null> => {
+          const seed = meta.name || meta.id;
+          const category = meta.tags?.join(",") || (meta.isTool ? "tool" : undefined);
+          const fallbackRobot = getFallbackAvatar(seed, category);
+
           if (meta.localFilePath) {
-            return getLocalImageUrl(
-              meta.localFilePath,
-              meta.updatedAt || meta.createdAt,
-            );
+            return {
+              url: getLocalImageUrl(meta.localFilePath, meta.updatedAt || meta.createdAt),
+              seed,
+              isTool: meta.isTool,
+              tags: meta.tags?.join(","),
+            };
           }
           if (meta.hasBlobsSeparated) {
             const blobs = await db.get("blobs", meta.id);
-            if (blobs?.avatarBlob) return URL.createObjectURL(blobs.avatarBlob);
+            if (blobs?.avatarBlob) {
+              return {
+                url: URL.createObjectURL(blobs.avatarBlob),
+                seed,
+                isTool: meta.isTool,
+                tags: meta.tags?.join(","),
+              };
+            }
           }
 
-          // 老卡片尚未完成 blob 分离时，头像仍可能直接存在 characters 里；
-          // 这里只回退读取前 4 张，不影响主页秒开，也避免文件夹封面变成占位图。
           const legacyChar = await db.get("characters", meta.id);
           if (legacyChar?.avatarBlob) {
-            return URL.createObjectURL(legacyChar.avatarBlob);
+            return {
+              url: URL.createObjectURL(legacyChar.avatarBlob),
+              seed,
+              isTool: meta.isTool,
+              tags: meta.tags?.join(","),
+            };
           }
 
-          let fallbackUrlStr = meta.avatarUrlFallback;
-          if (fallbackUrlStr && fallbackUrlStr.includes("api.dicebear.com")) {
-            fallbackUrlStr = undefined;
+          let url = meta.avatarUrlFallback;
+          if (!url || url.includes("api.dicebear.com") || url.startsWith("data:image/svg+xml;charset=utf-8,") || url.startsWith("data:image/svg+xml;base64,")) {
+            url = fallbackRobot;
           }
-          return fallbackUrlStr || getFallbackAvatar(meta.name || meta.id);
+
+          return {
+            url,
+            seed,
+            isTool: meta.isTool,
+            tags: meta.tags?.join(","),
+          };
         }),
       );
 
-      previews[folderId] = topBlobs.filter(Boolean) as string[];
+      previews[folderId] = topBlobs.filter(Boolean) as FolderPreviewItem[];
     }),
   );
 
   return previews;
 }
-
 export async function resolveFolderPath(
   folderId?: string | null,
 ): Promise<string> {
@@ -867,14 +1005,10 @@ export interface CharMeta {
 function buildCharMeta(val: any): CharMeta {
   let charTags = val.data?.data?.tags || val.data?.tags;
   if (!Array.isArray(charTags)) charTags = [];
-  const data = val.data || {};
-  const isQR = Array.isArray(data)
-    ? data.length > 0 && data[0].label !== undefined
-    : (data.quick_replies !== undefined || data.qrList !== undefined) &&
-        data.spec !== "chara_card_v2" &&
-        data.spec !== "chara_card_v3" &&
-        data.first_mes === undefined &&
-        data.personality === undefined;
+  const cat = getCharacterCategoryPrefix(val);
+  const isTool = cat !== "未归类";
+  const isQR = cat === "快速回复";
+  const fallbackAvatar = resolveAvatarUrl(val.avatarUrlFallback, val.name || val.id, cat);
   return {
     id: val.id,
     createdAt: val.createdAt,
@@ -885,11 +1019,11 @@ function buildCharMeta(val: any): CharMeta {
     deletedAt: val.deletedAt,
     folderId: val.folderId,
     tags: charTags,
-    isTool: getCharacterCategoryPrefix(val) !== "未归类",
+    isTool,
     isQR,
     localFilePath: val.localFilePath,
     hasBlobsSeparated: val.hasBlobsSeparated,
-    avatarUrlFallback: val.avatarUrlFallback,
+    avatarUrlFallback: fallbackAvatar,
   };
 }
 

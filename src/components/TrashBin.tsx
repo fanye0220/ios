@@ -1,4 +1,4 @@
-import { getFallbackAvatar } from '../lib/avatar';
+import { getFallbackAvatar, resolveAvatarUrl } from '../lib/avatar';
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Trash2, RotateCcw, X, AlertTriangle, CheckCircle2, CheckCircle } from 'lucide-react';
@@ -24,8 +24,8 @@ const TrashedCharacterCard = ({
   isSelected: boolean,
   onToggleSelect: (id: string) => void
 }) => {
-  const defaultFallback = getFallbackAvatar(char.name || char.id);
-  const [avatarUrl, setAvatarUrl] = useState<string>((char.avatarUrlFallback && !char.avatarUrlFallback.includes('api.dicebear.com') ? char.avatarUrlFallback : defaultFallback));
+  const defaultFallback = getFallbackAvatar(char.name || char.id, char.tags?.join(',') || (char.isTool ? 'tool' : undefined));
+  const [avatarUrl, setAvatarUrl] = useState<string>(resolveAvatarUrl(char.avatarUrlFallback, char.name || char.id));
   const [longPressTimer, setLongPressTimer] = useState<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -101,7 +101,11 @@ const TrashedCharacterCard = ({
           alt={char.name} 
           className="w-full h-full object-cover" 
           referrerPolicy="no-referrer"
-          
+          onError={(e) => {
+            if (e.currentTarget.src !== defaultFallback) {
+              e.currentTarget.src = defaultFallback;
+            }
+          }}
         />
       </div>
       <div className="flex-1 min-w-0">

@@ -1,4 +1,5 @@
-import { getFallbackAvatar } from "../lib/avatar";
+import { Capacitor } from "@capacitor/core";
+import { getFallbackAvatar, resolveAvatarUrl } from "../lib/avatar";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Masonry from 'react-masonry-css';
@@ -80,7 +81,7 @@ function FolderCover({
   viewMode,
 }: {
   folder: Folder;
-  previews: string[];
+  previews: any[];
   viewMode: string;
 }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -115,13 +116,20 @@ function FolderCover({
         {[0, 1, 2, 3].map((i) => (
           <div
             key={i}
-            className="w-full h-full bg-black/20 rounded-md overflow-hidden pointer-events-none"
+            className="w-full h-full bg-black/20 rounded-md overflow-hidden pointer-events-none flex items-center justify-center"
           >
             {previews[i] && (
               <img
-                src={previews[i]}
+                src={typeof previews[i] === 'string' ? previews[i] : previews[i].url}
                 alt=""
                 className="w-full h-full object-cover pointer-events-none"
+                onError={(e) => {
+                    const item = previews[i];
+                    const seed = (typeof item === 'object' && item?.seed) ? item.seed : (typeof item === 'string' ? item : (folder.name || folder.id));
+                    const category = (typeof item === 'object') ? (item.tags || (item.isTool ? 'tool' : undefined)) : undefined;
+                    e.currentTarget.src = getFallbackAvatar(seed, category);
+                    e.currentTarget.style.display = 'block';
+                }}
               />
             )}
           </div>
@@ -131,10 +139,9 @@ function FolderCover({
   }
 
   return (
-    <FolderIcon className="w-1/2 h-1/2 text-white/50 pointer-events-none" />
+    <FolderIcon className="w-1/2 h-1/2 text-slate-400/70 dark:text-white/50 pointer-events-none" />
   );
 }
-
 function SortableItemWrapper({
   id,
   children,
@@ -239,20 +246,20 @@ export function CharacterList({
   const [characters, setCharacters] = useState<CharacterCard[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [folderPreviews, setFolderPreviews] = useState<
-    Record<string, string[]>
+    Record<string, any[]>
   >({});
   // 每次刷新文件夹预览图都会重新生成一批 blob URL, 这里记一份"当前挂着的"
   // 引用, 下次覆盖前先批量释放旧的, 避免每次翻页/切换文件夹都泄漏一批。
   const folderPreviewUrlsRef = useRef<string[]>([]);
-  const setFolderPreviewsWithCleanup = (previews: Record<string, string[]>) => {
+  const setFolderPreviewsWithCleanup = (previews: Record<string, any[]>) => {
     const oldUrls = folderPreviewUrlsRef.current;
-    const newUrls = Object.values(previews).flat();
+    const newUrls = Object.values(previews).flat().map(p => typeof p === 'string' ? p : p.url);
     folderPreviewUrlsRef.current = newUrls;
     setFolderPreviews(previews);
     if (oldUrls.length > 0) {
       requestAnimationFrame(() => {
         oldUrls.forEach((u) => {
-          if (u.startsWith("blob:")) URL.revokeObjectURL(u);
+          if (u && u.startsWith("blob:")) URL.revokeObjectURL(u);
         });
       });
     }
@@ -1275,7 +1282,7 @@ export function CharacterList({
 
       let success = 0;
       let completed = 0;
-      const CONCURRENCY = 5;
+      const CONCURRENCY = Capacitor.isNativePlatform() ? 3 : 5;
       let currentIndex = 0;
 
       setProgress({
@@ -1299,6 +1306,7 @@ export function CharacterList({
               total: charsArray.length,
               message: `正在批量同步至云端...`,
             });
+            await new Promise(r => setTimeout(r, Capacitor.isNativePlatform() ? 200 : 50));
           }
         }
       };
@@ -1374,7 +1382,7 @@ export function CharacterList({
         addAndroidZipEntry,
         finishAndroidZip,
       } = await import("../lib/appBridge");
-      if (isAndroid()) {
+      if (Capacitor.isNativePlatform()) {
         const charIdsToExport = new Set<string>();
 
         for (const id of Array.from(idsToProcess)) {
@@ -1426,7 +1434,7 @@ export function CharacterList({
                     const { injectTavernData } = await import("../lib/png");
                     const newBuffer = injectTavernData(buffer, exportData);
                     const exportFileName = `${safeName}.png`;
-                    if (isAndroid()) {
+                    if (Capacitor.isNativePlatform()) {
                         await exportFileToMIU(exportFileName, newBuffer, 'image/png', true);
                     } else {
                         const blob = new Blob([newBuffer], { type: 'image/png' });
@@ -1446,7 +1454,7 @@ export function CharacterList({
             // Fallback to JSON
             const exportFileName = `${safeName}.json`;
             const bytes = new TextEncoder().encode(JSON.stringify(exportData, null, 2));
-            if (isAndroid()) {
+            if (Capacitor.isNativePlatform()) {
                 await exportFileToMIU(exportFileName, bytes.buffer, 'application/json', true);
             } else {
                 const blob = new Blob([bytes.buffer], { type: 'application/json' });
@@ -1718,8 +1726,11 @@ export function CharacterList({
       if (!targetId) return false;
       if (folderIdToCheck === targetId) return true;
       const allFolders = await getFolders();
+      const visited = new Set<string>();
       let current = allFolders.find((f) => f.id === targetId);
       while (current && current.parentId) {
+        if (visited.has(current.id)) break; // 环形引用兜底
+        visited.add(current.id);
         if (current.parentId === folderIdToCheck) return true;
         current = allFolders.find((f) => f.id === current.parentId);
       }
@@ -2908,12 +2919,8 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
   isSelected: boolean;
   viewMode: "grid" | "list" | "masonry";
 }) {
-  const defaultFallback = getFallbackAvatar(char.name || char.id);
-  const initialUrl =
-    char.avatarUrlFallback &&
-    !char.avatarUrlFallback.includes("api.dicebear.com")
-      ? char.avatarUrlFallback
-      : defaultFallback;
+  const defaultFallback = getFallbackAvatar(char.name || char.id, char.tags?.join(',') || (char.isTool ? 'tool' : undefined));
+  const initialUrl = resolveAvatarUrl(char.avatarUrlFallback, char.name || char.id, char.tags?.join(',') || (char.isTool ? 'tool' : undefined));
   const [url, setUrl] = useState<string>(initialUrl);
   // 追踪 onError 兜底逻辑里额外创建的 blob URL, 保证换掉/卸载时释放,
   // 否则长列表滚动 + 图片偶发加载失败会不断泄漏内存(可能是持续发热的一个来源)。
@@ -3052,14 +3059,19 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
             alt={char.name}
             className="w-full h-full object-cover pointer-events-none"
             onError={() => {
+              if (url === defaultFallback) return;
+              if (fallbackObjectUrlRef.current) {
+                setUrl(defaultFallback);
+                return;
+              }
               if (char.avatarBlob) setUrlWithFallbackCleanup(URL.createObjectURL(char.avatarBlob), true);
               else if (char.hasBlobsSeparated) {
                 getCharacterBlob(char.id).then((b) => {
                   if (b && b.avatarBlob)
                     setUrlWithFallbackCleanup(URL.createObjectURL(b.avatarBlob), true);
-                  else setUrl(initialUrl);
+                  else setUrl(defaultFallback);
                 });
-              } else setUrl(initialUrl);
+              } else setUrl(defaultFallback);
             }}
           />
         </div>
@@ -3136,13 +3148,18 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
         alt={char.name}
         className={`w-full ${viewMode === "masonry" ? "h-auto block" : "h-full"} object-cover pointer-events-none`}
         onError={() => {
+          if (url === defaultFallback) return;
+          if (fallbackObjectUrlRef.current) {
+            setUrl(defaultFallback);
+            return;
+          }
           if (char.avatarBlob) setUrlWithFallbackCleanup(URL.createObjectURL(char.avatarBlob), true);
           else if (char.hasBlobsSeparated) {
             getCharacterBlob(char.id).then((b) => {
               if (b && b.avatarBlob) setUrlWithFallbackCleanup(URL.createObjectURL(b.avatarBlob), true);
-              else setUrl(initialUrl);
+              else setUrl(defaultFallback);
             });
-          } else setUrl(initialUrl);
+          } else setUrl(defaultFallback);
         }}
       />
       <div className="absolute inset-0 bg-gradient-to-t from-[var(--overlay-bottom)] via-[var(--overlay-mid)] to-transparent flex flex-col justify-end p-3 pointer-events-none">

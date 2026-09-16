@@ -1,8 +1,12 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Cloud, Download, Upload, Trash2, Github, Loader2, Search, Folder, ChevronRight } from 'lucide-react';
+import { Capacitor } from '@capacitor/core';
+import { Cloud, Download, Upload, Trash2, Github, Loader2, Search, Folder, ChevronRight, MessageSquare, FileText } from 'lucide-react';
 import { listCloudCharacters, downloadCloudCharacter, deleteCloudCharacter } from '../lib/cloudDrive';
-import { getCachedMeta, saveCharacter, getFolders, saveFolder } from '../lib/db';
+import { getCachedMeta, saveCharacter, getFolders, saveFolder, saveChat, getCharacterCategoryPrefix } from '../lib/db';
+import { getFallbackAvatar } from '../lib/avatar';
 import { initAuth, googleSignIn, logout, getAccessToken, listBackupsFromDrive, deleteBackupFromDrive, triggerManualBackup, triggerRestore, onSyncStateChange, SyncState } from '../lib/drive';
+
+const formatCloudName = (name: string) => name.replace(/_[a-f0-9-]{36}$/i, "");
 
 export function CloudSyncTab() {
   const [needsAuth, setNeedsAuth] = useState(true);
@@ -14,7 +18,7 @@ export function CloudSyncTab() {
   const [isLoadingBackups, setIsLoadingBackups] = useState(false);
   
   const [actionFileId, setActionFileId] = useState<string | null>(null);
-  const [syncInfo, setSyncInfo] = useState<SyncState>({ isActive: false, taskName: '', message: '', isError: false, completed: false });
+  const [syncInfo, setSyncInfo] = useState<SyncState>({ isActive: false, taskName: '', message: '', isError: false, completed: false, needsReauth: false });
 
     const [activeTab, setActiveTab] = useState<'backup' | 'cloud_drive'>('backup');
   const [cloudChars, setCloudChars] = useState<any[]>([]);
@@ -76,18 +80,21 @@ export function CloudSyncTab() {
     try {
         const { jsonData, avatarBlob, studioMeta, avatarHistory } = await downloadCloudCharacter(token, fileId, fileName, (msg) => console.log(msg));
         const existingChars = await getCachedMeta();
+        const rawFileName = (fileName || '').replace(/\.(zip|png|json|webp|jpg|jpeg)$/i, '').trim();
         const extractedName =
-          appProperties?.charName ||
-          jsonData.name ||
-          jsonData.data?.name ||
-          charName;
+          appProperties?.charName?.trim() ||
+          jsonData?.name?.trim() ||
+          jsonData?.data?.name?.trim() ||
+          charName?.trim() ||
+          rawFileName ||
+          '未命名卡片';
         const cloudCharId = appProperties?.charId;
         const existing = cloudCharId
           ? existingChars.find(c => c.id === cloudCharId)
           : existingChars.find(c => c.name?.trim() === extractedName?.trim());
         
         let targetId: string = crypto.randomUUID();
-        let folderId = undefined;
+        let folderId: string | undefined = undefined;
         let createTime = Date.now();
         
         if (existing) {
@@ -97,23 +104,33 @@ export function CloudSyncTab() {
         }
         
         let mergedMeta = { ...studioMeta, ...appProperties };
-        if (!existing && !mergedMeta.folderPath) {
-           const isTheme = jsonData.name === "theme_config" || jsonData.type === "theme";
-           const isAIPreset = jsonData.type === "preset" || (jsonData.name && typeof jsonData.name === 'string' && (jsonData.name.includes("Preset") || jsonData.name.includes("Prompt")));
-           const isWorldbook = jsonData.entries !== undefined || jsonData.name === "Worldbook" || jsonData.data?.entries !== undefined;
-           const isQR = jsonData.qrList !== undefined || jsonData.version === 2 || jsonData.quick_replies !== undefined;
-           const isScript = jsonData.type === "script" && jsonData.content !== undefined && jsonData.name !== undefined;
-           
-           if (isTheme) mergedMeta.folderPath = "美化";
-           else if (isAIPreset) mergedMeta.folderPath = "预设";
-           else if (isWorldbook) mergedMeta.folderPath = "世界书";
-           else if (isQR) mergedMeta.folderPath = "快速回复";
-           else if (isScript) mergedMeta.folderPath = "工具区";
+        const cardCategory = getCharacterCategoryPrefix(jsonData);
+        if (!mergedMeta.folderPath) {
+           if (cardCategory !== '未归类') {
+             mergedMeta.folderPath = `工具区/${cardCategory}`;
+           }
         }
         
-        if (!existing && mergedMeta?.folderPath) {
+        if (mergedMeta?.folderPath) {
            const allFolders = await getFolders();
-           const parts = mergedMeta.folderPath.split('/');
+           let parts = (mergedMeta.folderPath as string).split('/').filter(Boolean);
+           
+           const isBundle = mergedMeta.hasBundle === 'true' || mergedMeta.hasBundle === true;
+           // If it's a bundle, the Google Drive folder path includes the character's own directory at the end.
+           // We remove it so we don't create a local folder named after the character.
+           if (isBundle && parts.length > 0) {
+               parts.pop();
+           }
+           
+           // 1. "角色卡" 顶层分类对应 App 根目录（主页），不建同名文件夹
+           if (parts.length > 0 && parts[0] === '角色卡') {
+               parts = parts.slice(1);
+           }
+           // 2. "工具区" 顶层分类对应 App 工具分类，不建同名文件夹
+           if (parts.length > 0 && parts[0] === '工具区') {
+               parts = parts.slice(1);
+           }
+           
            let currentParentId: string | undefined = undefined;
            for (const part of parts) {
                let found = allFolders.find(f => f.name === part && f.parentId === currentParentId);
@@ -141,6 +158,11 @@ export function CloudSyncTab() {
         }
         
         jsonData.id = targetId;
+        const sourceUrl = (mergedMeta as any)?.sourceUrl || '';
+        if (sourceUrl) {
+          const sourceTarget = jsonData.data && typeof jsonData.data === 'object' ? jsonData.data : jsonData;
+          sourceTarget.extensions = { ...(sourceTarget.extensions || {}), source: sourceUrl };
+        }
         
         const charToSave: any = {
             id: targetId,
@@ -148,7 +170,11 @@ export function CloudSyncTab() {
             data: jsonData,
             createdAt: createTime,
             folderId,
-            avatarHistory: avatarHistory || []
+            avatarHistory: avatarHistory || [],
+            avatarUrlFallback: avatarBlob ? undefined : getFallbackAvatar(
+                (extractedName && extractedName !== '未命名卡片') ? extractedName : (appProperties?.charId || fileId || targetId),
+                cardCategory !== '未归类' ? cardCategory : (mergedMeta as any)?.cardType
+            )
         };
         
         if (avatarBlob) {
@@ -162,6 +188,42 @@ export function CloudSyncTab() {
         alert("下载失败: " + err.message);
     } finally {
         setDownloadingId(null);
+    }
+  };
+  const handleDownloadCloudChat = async (fileId: string, fileName: string, appProperties?: any) => {
+    if (!token) return;
+    setDownloadingId(fileId);
+    try {
+      const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error("下载聊天记录失败");
+
+      const text = await response.text();
+      const messages = text
+        .split(/\r?\n/)
+        .filter((line) => line.trim())
+        .map((line) => JSON.parse(line));
+
+      const chatName = (fileName || "云聊天").replace(/\.jsonl$/i, '');
+      const characterId = appProperties?.charId || '';
+      const createdAt = Number(appProperties?.createdAt) || Date.now();
+
+      await saveChat({
+        id: crypto.randomUUID(),
+        characterId,
+        name: chatName,
+        messages,
+        createdAt,
+        firstAiName: appProperties?.charName || '',
+      });
+
+      window.dispatchEvent(new CustomEvent('charactersUpdated'));
+      alert(`聊天记录「${chatName}」已下载至本地！`);
+    } catch (err: any) {
+      alert("下载聊天记录失败: " + err.message);
+    } finally {
+      setDownloadingId(null);
     }
   };
 const handleDeleteCloudChar = async (fileId: string, name: string) => {
@@ -235,6 +297,76 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
       console.error('List backups failed:', err);
     } finally {
       setIsLoadingBackups(false);
+    }
+  };
+
+
+  const [isAutoBackup, setIsAutoBackup] = useState(() => {
+    const oldValue = localStorage.getItem('auto_backup_enabled');
+    if (oldValue === 'true') {
+      localStorage.setItem('miu_auto_backup', '1');
+      localStorage.removeItem('auto_backup_enabled');
+      return true;
+    }
+    if (oldValue === 'false') {
+      localStorage.setItem('miu_auto_backup', '0');
+      localStorage.removeItem('auto_backup_enabled');
+      return false;
+    }
+    return localStorage.getItem('miu_auto_backup') === '1';
+  });
+  const [oneClickProgress, setOneClickProgress] = useState<{current: number, total: number, message: string} | null>(null);
+
+  const handleOneClickCloudSync = async () => {
+    if (!token) return;
+    const confirm = window.confirm("确定要将所有本地卡片逐一同步至云端文件夹吗？\n\n这可能需要一些时间，请保持应用在前台运行。");
+    if (!confirm) return;
+
+    try {
+      setOneClickProgress({ current: 0, total: 0, message: '正在准备...' });
+      const { getCachedMeta } = await import('../lib/db');
+      const { uploadCharacterToCloud } = await import('../lib/cloudDrive');
+      const chars = await getCachedMeta();
+      
+      setOneClickProgress({ current: 0, total: chars.length, message: '正在同步...' });
+      let success = 0;
+      let skipped = 0;
+      
+      const isAndroid = Capacitor.isNativePlatform();
+      const CONCURRENCY = isAndroid ? 3 : 5;
+      let currentIndex = 0;
+      
+      const uploadWorker = async () => {
+        while (currentIndex < chars.length) {
+          const i = currentIndex++;
+          try {
+             const res = await uploadCharacterToCloud(token, chars[i].id);
+             if (res === 'uploaded') success++;
+             else skipped++;
+          } catch(e) {
+             console.error("Failed", e);
+          } finally {
+             setOneClickProgress(prev => prev ? { ...prev, current: prev.current + 1 } : null);
+             await new Promise(r => setTimeout(r, isAndroid ? 200 : 50));
+          }
+        }
+      };
+
+      const workers = [];
+      for (let w = 0; w < CONCURRENCY; w++) {
+        workers.push(uploadWorker());
+      }
+      await Promise.all(workers);
+      
+      setOneClickProgress(null);
+      alert(`一键同步完成！\n成功上传: ${success}\n跳过已存在: ${skipped}`);
+      if (activeTab === 'cloud_drive') {
+        loadCloudChars(token);
+      }
+    } catch(err: any) {
+       console.error(err);
+       setOneClickProgress(null);
+       alert("同步发生错误: " + err.message);
     }
   };
 
@@ -336,7 +468,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
           onClick={handleLogout}
           className="text-xs px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70 transition"
         >
-          退出登录
+          退出
         </button>
       </div>
 
@@ -357,7 +489,27 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
 
       {activeTab === 'backup' && (
         <div className="space-y-6">
-          <div className="flex flex-col gap-3">
+          
+          <div className="space-y-4">
+            
+            <button
+                 onClick={handleOneClickCloudSync}
+                 disabled={oneClickProgress !== null}
+                 className="w-full py-4 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-medium flex justify-center items-center gap-2 transition disabled:opacity-50 shadow-sm"
+               >
+                 {oneClickProgress ? (
+                   <>
+                     <Loader2 className="w-5 h-5 animate-spin" />
+                     <span>同步中 {oneClickProgress.current}/{oneClickProgress.total}</span>
+                   </>
+                 ) : (
+                   <>
+                     <Upload className="w-5 h-5" />
+                     逐一同步所有卡片
+                   </>
+                 )}
+               </button>
+
             <label className="flex items-center justify-between p-4 bg-white/5 border border-white/10 rounded-xl cursor-pointer hover:bg-white/10 transition">
               <div>
                 <div className="text-sm font-medium text-white">挂机自动同步</div>
@@ -369,42 +521,47 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                 <input 
                   type="checkbox" 
                   className="sr-only peer" 
-                  checked={localStorage.getItem('auto_backup_enabled') === 'true'}
+                  checked={isAutoBackup}
                   onChange={(e) => {
-                    localStorage.setItem('auto_backup_enabled', e.target.checked ? 'true' : 'false');
-                    setActionFileId(actionFileId === 'refresh' ? null : 'refresh');
+                    const val = e.target.checked;
+                    setIsAutoBackup(val);
+                    localStorage.setItem('miu_auto_backup', val ? '1' : '0');
                   }}
                 />
                 <div className="w-11 h-6 bg-black/40 border border-white/20 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white/80 peer-checked:after:bg-white after:border-gray-300/20 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500 peer-checked:border-blue-500 shadow-inner"></div>
               </div>
             </label>
 
-            <button
-              onClick={handleUploadBackup}
-              disabled={syncInfo.isActive}
-              className="w-full py-3 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-medium flex justify-center items-center gap-2 transition disabled:opacity-50"
-            >
-              {syncInfo.isActive && syncInfo.taskName === '手动备份' ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>请求已发送...</span>
-                </>
-              ) : (
-                <>
-                  <Upload className="w-5 h-5" />
-                  一键同步所有本地卡片到云库
-                </>
-              )}
-            </button>
           </div>
 
           <div className="p-4 bg-white/5 border border-white/10 rounded-xl space-y-4">
+
             <div className="flex items-center justify-between">
-              <h4 className="text-sm font-medium text-white/80">遗留 Zip 备份档案</h4>
+              <h4 className="text-sm font-medium text-white/80">旧版完整压缩包备份 (易闪退)</h4>
+
               <button onClick={() => {if(token) loadBackups(token)}} className="text-xs text-blue-400 hover:text-blue-300 transition px-2 py-1 bg-blue-500/10 rounded-md">
                 刷新
               </button>
             </div>
+
+            <button
+              onClick={handleUploadBackup}
+              disabled={syncInfo.isActive}
+              className="w-full py-2 mt-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/80 font-medium flex justify-center items-center gap-2 transition disabled:opacity-50 text-sm border border-white/10"
+            >
+              {syncInfo.isActive && syncInfo.taskName === '手动备份' ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>请求已发送...</span>
+                </>
+              ) : (
+                <>
+                  <Upload className="w-4 h-4" />
+                  创建旧版压缩包备份
+                </>
+              )}
+            </button>
+
             
             {isLoadingBackups ? (
               <div className="flex justify-center py-6">
@@ -507,7 +664,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                           onClick={() => setCurrentCloudPath(arr.slice(0, idx + 1).join('/'))}
                           className="hover:text-white transition"
                         >
-                          {part}
+                          {formatCloudName(part)}
                         </button>
                       </div>
                     ))}
@@ -525,13 +682,13 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                           className="flex items-center gap-2 sm:gap-2.5 pl-3.5 pr-2 py-3 sm:pl-4 sm:pr-3 text-left min-w-0 shrink"
                         >
                           <Folder className="w-5 h-5 text-blue-400 shrink-0" />
-                          <span className="text-[14px] font-medium text-white/90 truncate max-w-[130px] sm:max-w-[200px]">{folderName}</span>
+                          <span className="text-[14px] font-medium text-white/90 truncate max-w-[130px] sm:max-w-[200px]">{formatCloudName(folderName)}</span>
                         </button>
                         <div className="w-[1px] bg-white/10 my-2"></div>
                         <button
                           onClick={async (e) => {
                             e.stopPropagation();
-                            if (window.confirm(`确定要删除云端文件夹 "${folderName}" 及其包含的所有卡片吗？此操作不可恢复！`)) {
+                            if (window.confirm(`确定要删除云端文件夹 "${formatCloudName(folderName)}" 及其包含的所有卡片吗？此操作不可恢复！`)) {
                                const charsToDelete = cloudChars.filter(c => {
                                   const p = c.appProperties?.folderPath || "";
                                   return p === fullFolderPath || p.startsWith(fullFolderPath + '/');
@@ -567,36 +724,35 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                       <div key={char.id} className="relative group rounded-xl overflow-hidden bg-white/5 border border-white/10 flex flex-col h-auto">
                         <div className="relative aspect-[3/4] overflow-hidden bg-black/40">
                         {char.thumbnailLink ? (
-                          
-                          <>
-                            <img 
-                              src={char.thumbnailLink} 
-                              alt={charName} 
-                              className="w-full h-full object-cover group-hover:scale-105 transition duration-500" 
-                              referrerPolicy="no-referrer" 
-                              onError={(e) => {
-                                e.currentTarget.style.display = 'none';
-                                const fallback = e.currentTarget.nextElementSibling;
-                                if (fallback) fallback.classList.remove('hidden');
-                              }}
-                            />
-                            <div className="w-full h-full items-center justify-center hidden bg-black/40">
-                              <Cloud className="w-8 h-8 text-white/20" />
-                            </div>
-                          </>
-
+                          <img 
+                            src={char.thumbnailLink} 
+                            alt={charName} 
+                            className="w-full h-full object-cover group-hover:scale-105 transition duration-500" 
+                            referrerPolicy="no-referrer" 
+                            onError={(e) => {
+                              const fbSeed = char.appProperties?.charName || char.name?.replace(/\.(zip|png|json|webp|jpg|jpeg)$/i, '') || char.id;
+                              const fbCat = char.appProperties?.cardType;
+                              e.currentTarget.src = getFallbackAvatar(fbSeed, fbCat);
+                            }}
+                          />
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <Cloud className="w-8 h-8 text-white/20" />
-                          </div>
+                          <img 
+                            src={getFallbackAvatar(
+                              char.appProperties?.charName || char.name?.replace(/\.(zip|png|json|webp|jpg|jpeg)$/i, '') || char.id,
+                              char.appProperties?.cardType
+                            )} 
+                            alt={charName} 
+                            className="w-full h-full object-cover group-hover:scale-105 transition duration-500" 
+                          />
                         )}
                         
-                        {char.appProperties?.cardType && char.appProperties.cardType !== 'character' && (
+                        {((char.appProperties?.cardType && char.appProperties.cardType !== 'character') || char.appProperties?.isChat === 'true') && (
                           <div className="absolute top-2 left-2 px-2 py-0.5 bg-black/60 backdrop-blur-md rounded-md text-[10px] font-medium text-white/90 border border-white/10 uppercase">
-                            {char.appProperties.cardType === 'worldbook' ? '世界书' :
+                            {char.appProperties?.isChat === 'true' ? '聊天记录' :
+                             char.appProperties.cardType === 'worldbook' ? '世界书' :
                              char.appProperties.cardType === 'qr' ? '快速回复' :
                              char.appProperties.cardType === 'preset' ? '预设' :
-                             char.appProperties.cardType === 'theme' ? '主题' :
+                             char.appProperties.cardType === 'theme' ? '美化' :
                              char.appProperties.cardType === 'script' ? '脚本' : char.appProperties.cardType}
                           </div>
                         )}
@@ -605,7 +761,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                         
                         <div className="absolute inset-0 items-center justify-center gap-3 opacity-0 lg:group-hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-sm hidden lg:flex">
                            <button 
-                             onClick={() => handleDownloadCloudChar(char.id, charName, char.name, char.appProperties)}
+                             onClick={() => char.appProperties?.isChat === 'true' ? handleDownloadCloudChat(char.id, char.name, char.appProperties) : handleDownloadCloudChar(char.id, charName, char.name, char.appProperties)}
                              disabled={downloadingId === char.id}
                              title="下载卡片"
                              className="p-3 rounded-full bg-blue-500 hover:bg-blue-400 text-white transition transform hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50"
@@ -633,7 +789,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                         </div>
                         <div className="flex items-center gap-1.5 sm:gap-2 mt-2 lg:hidden">
                            <button 
-                             onClick={() => handleDownloadCloudChar(char.id, charName, char.name, char.appProperties)}
+                             onClick={() => char.appProperties?.isChat === 'true' ? handleDownloadCloudChat(char.id, char.name, char.appProperties) : handleDownloadCloudChar(char.id, charName, char.name, char.appProperties)}
                              disabled={downloadingId === char.id}
                              className="flex-1 py-1 sm:py-1.5 rounded-lg bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center justify-center gap-1 active:bg-blue-500/40 transition disabled:opacity-50"
                            >
