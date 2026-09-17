@@ -137,7 +137,10 @@ export interface Folder {
   createdAt: number;
   parentId?: string | null;
   sortOrder?: number;
+  tags?: string[];
+  isTool?: boolean;
   avatarBlob?: Blob;
+  deletedAt?: number;
 }
 
 export interface CharacterCard {
@@ -156,6 +159,8 @@ export interface CharacterCard {
   folderId?: string;
   hasBlobsSeparated?: boolean;
   sortOrder?: number;
+  tags?: string[];
+  isTool?: boolean;
 }
 
 export interface ChatLog {
@@ -546,7 +551,8 @@ export async function migrateDatabase(
 
 export async function getFolders(): Promise<Folder[]> {
   const db = await initDB();
-  const folders = await db.getAllFromIndex("folders", "by-date");
+  const rawFolders = await db.getAllFromIndex("folders", "by-date");
+  const folders = rawFolders.filter(f => !f.deletedAt);
   return folders.sort((a, b) => {
     if (a.sortOrder !== undefined && b.sortOrder !== undefined) {
       return a.sortOrder - b.sortOrder;
@@ -592,8 +598,8 @@ export async function getOrCreateNestedFolder(
 export interface FolderPreviewItem {
   url: string;
   seed: string;
+  tags?: string[];
   isTool?: boolean;
-  tags?: string;
 }
 
 export async function getFolderPreviews(
@@ -601,84 +607,49 @@ export async function getFolderPreviews(
 ): Promise<Record<string, FolderPreviewItem[]>> {
   if (folderIds.length === 0) return {};
   const db = await initDB();
-  const previews: Record<string, FolderPreviewItem[]> = {};
+  const tx = db.transaction("char_meta", "readonly");
+  const index = tx.store.index("by-folder");
 
-  let allMeta: CharMeta[] = [];
-  try {
-    allMeta = await getCachedMeta();
-  } catch {}
+  const previews: Record<string, FolderPreviewItem[]> = {};
 
   await Promise.all(
     folderIds.map(async (folderId) => {
-      let metas = allMeta.filter((m) => m.folderId === folderId && !m.deletedAt);
-
-      if (metas.length === 0) {
-        try {
-          const txMeta = db.transaction("char_meta", "readonly");
-          const indexMeta = txMeta.store.index("by-folder");
-          metas = await indexMeta.getAll(folderId);
-          metas = metas.filter((m) => !m.deletedAt);
-        } catch {}
-      }
-
-      if (metas.length === 0) {
-        try {
-          const txChar = db.transaction("characters", "readonly");
-          const indexChar = txChar.store.index("by-folder");
-          const chars = await indexChar.getAll(folderId);
-          metas = chars.filter((c) => !c.deletedAt).map((c) => buildCharMeta(c));
-        } catch {}
-      }
-
-      metas.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      let metas = await index.getAll(folderId);
+      metas = metas.filter((m) => !m.deletedAt);
+      metas.sort((a, b) => b.createdAt - a.createdAt);
       const topMetas = metas.slice(0, 4);
 
+      // 只读取前 4 张卡的轻量 meta, 再按需取头像 blob, 不再全量读取角色 data
       const topBlobs = await Promise.all(
-        topMetas.map(async (meta): Promise<FolderPreviewItem | null> => {
-          const seed = meta.name || meta.id;
-          const category = meta.tags?.join(",") || (meta.isTool ? "tool" : undefined);
-          const fallbackRobot = getFallbackAvatar(seed, category);
-
+        topMetas.map(async (meta) => {
+          let url: string | undefined = undefined;
           if (meta.localFilePath) {
-            return {
-              url: getLocalImageUrl(meta.localFilePath, meta.updatedAt || meta.createdAt),
-              seed,
-              isTool: meta.isTool,
-              tags: meta.tags?.join(","),
-            };
-          }
-          if (meta.hasBlobsSeparated) {
+            url = getLocalImageUrl(
+              meta.localFilePath,
+              meta.updatedAt || meta.createdAt,
+            );
+          } else if (meta.hasBlobsSeparated) {
             const blobs = await db.get("blobs", meta.id);
-            if (blobs?.avatarBlob) {
-              return {
-                url: URL.createObjectURL(blobs.avatarBlob),
-                seed,
-                isTool: meta.isTool,
-                tags: meta.tags?.join(","),
-              };
+            if (blobs?.avatarBlob) url = URL.createObjectURL(blobs.avatarBlob);
+          } else {
+            const legacyChar = await db.get("characters", meta.id);
+            if (legacyChar?.avatarBlob) {
+              url = URL.createObjectURL(legacyChar.avatarBlob);
             }
           }
-
-          const legacyChar = await db.get("characters", meta.id);
-          if (legacyChar?.avatarBlob) {
-            return {
-              url: URL.createObjectURL(legacyChar.avatarBlob),
-              seed,
-              isTool: meta.isTool,
-              tags: meta.tags?.join(","),
-            };
+          let fallbackUrlStr = meta.avatarUrlFallback;
+          if (fallbackUrlStr && (
+              fallbackUrlStr.includes("api.dicebear.com") || 
+              fallbackUrlStr.startsWith('data:image/svg+xml;charset=utf-8,') || 
+              fallbackUrlStr.startsWith('data:image/svg+xml;base64,')
+          )) {
+            fallbackUrlStr = undefined;
           }
-
-          let url = meta.avatarUrlFallback;
-          if (!url || url.includes("api.dicebear.com") || url.startsWith("data:image/svg+xml;charset=utf-8,") || url.startsWith("data:image/svg+xml;base64,")) {
-            url = fallbackRobot;
-          }
-
           return {
-            url,
-            seed,
-            isTool: meta.isTool,
-            tags: meta.tags?.join(","),
+            url: url || fallbackUrlStr || getFallbackAvatar(meta.name || meta.id, meta.tags?.join(',') || (meta.isTool ? 'tool' : undefined)),
+            seed: meta.name || meta.id,
+            tags: meta.tags,
+            isTool: meta.isTool
           };
         }),
       );
@@ -689,6 +660,7 @@ export async function getFolderPreviews(
 
   return previews;
 }
+
 export async function resolveFolderPath(
   folderId?: string | null,
 ): Promise<string> {
@@ -819,7 +791,11 @@ export async function deleteFolder(
   const charMetaStore2 = tx2.objectStore("char_meta");
 
   for (const folderId of folderIdsToDelete) {
-    await folderStore2.delete(folderId);
+    const f = allFolders.find((x) => x.id === folderId);
+    if (f) {
+      f.deletedAt = Date.now();
+      await folderStore2.put(f);
+    }
   }
 
   for (const char of charsToMove) {
@@ -928,6 +904,7 @@ export async function cleanupEmptyFolders(): Promise<void> {
   const foldersToDelete = new Set<string>();
 
   for (const f of allFolders) {
+    if (f.deletedAt) continue;
     if (f.name === "回收站") {
       foldersToDelete.add(f.id);
     }
@@ -992,14 +969,18 @@ export interface CharMeta {
   name: string;
   autoImportFilename?: string;
   sortOrder?: number;
+
+
   deletedAt?: number;
   folderId?: string;
-  tags: string[];
+
   avatarUrlFallback?: string;
   localFilePath?: string;
   hasBlobsSeparated?: boolean;
-  isTool?: boolean;
+
   isQR?: boolean;
+  tags?: string[];
+  isTool?: boolean;
 }
 
 function buildCharMeta(val: any): CharMeta {
@@ -1935,6 +1916,23 @@ export async function restoreCharacter(id: string): Promise<void> {
       const folder = await db.get("folders", char.folderId);
       if (!folder) {
         delete char.folderId;
+      } else {
+        let currentFolderId = char.folderId;
+        const txFolders = db.transaction("folders", "readwrite");
+        const folderStore = txFolders.store;
+        while (currentFolderId) {
+          const f = await folderStore.get(currentFolderId);
+          if (f) {
+            if (f.deletedAt) {
+              delete f.deletedAt;
+              await folderStore.put(f);
+            }
+            currentFolderId = f.parentId;
+          } else {
+            break;
+          }
+        }
+        await txFolders.done;
       }
     }
 
@@ -2032,6 +2030,17 @@ export async function emptyTrash(): Promise<void> {
   // 只调一次原生批量接口、数据库一个事务删完), 不再自己另起一套
   // "一个个删、每个之间还睡50ms"的循环。
   await deleteCharactersBulk(toDelete);
+
+  const tx2 = db.transaction("folders", "readwrite");
+  const fStore = tx2.store;
+  let fCursor = await fStore.openCursor();
+  while (fCursor) {
+    if (fCursor.value.deletedAt) {
+      await fCursor.delete();
+    }
+    fCursor = await fCursor.continue();
+  }
+  await tx2.done;
 }
 
 export async function cleanupOldTrash(): Promise<void> {

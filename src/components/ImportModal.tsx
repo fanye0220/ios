@@ -447,8 +447,8 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
           }
         } else if (
           file.type === "application/json" ||
-          file.name.endsWith(".json") ||
-          file.name.endsWith(".jsonl") ||
+          file.name.toLowerCase().endsWith(".json") ||
+          file.name.toLowerCase().endsWith(".jsonl") ||
           file.name.endsWith(".js") ||
           file.name.endsWith(".txt")
         ) {
@@ -458,7 +458,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
             reader.onerror = reject;
             reader.readAsText(file, "utf-8");
           });
-          if (file.name.endsWith(".jsonl")) {
+          if (file.name.toLowerCase().endsWith(".jsonl")) {
             const lines = text.trim().split("\n");
             let parsedMessages = [];
             for (const line of lines) {
@@ -467,13 +467,25 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
                 if (p) parsedMessages.push(p);
               } catch (e) {}
             }
-            if (parsedMessages.length > 0) {
-              data = parsedMessages;
+            const { sanitizeChatMessages } = await import("../lib/chatParse");
+            const sanitized = sanitizeChatMessages(parsedMessages);
+            if (sanitized.isChat) {
+              data = sanitized.messages;
               isMain = false;
             } else {
               errorMsg = "无效的聊天记录文件。";
             }
-          } else if (file.name.endsWith(".js") || file.name.endsWith(".txt")) {
+          } else if (file.name.endsWith(".txt")) {
+            const { parseTextChatLog } = await import("../lib/chatParse");
+            const parsed = parseTextChatLog(text);
+            if (parsed.isChat) {
+              data = parsed.messages;
+              isMain = false;
+            } else {
+              data = { type: "script", name: file.name.replace(/\.[^/.]+$/, ""), content: text };
+              isMain = true;
+            }
+          } else if (file.name.endsWith(".js")) {
             data = { type: "script", name: file.name.replace(/\.[^/.]+$/, ""), content: text };
             isMain = true;
           } else {
@@ -493,7 +505,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
             const isScript = data?.type === "script" && data?.content !== undefined && data?.name !== undefined;
 
             const isChatData = Array.isArray(data)
-              ? (data.length > 0 && (data[0].mes || data[0].text !== undefined))
+              ? data.some((item) => item && (item.mes !== undefined || item.text !== undefined || item.is_user !== undefined || item.send_date !== undefined))
               : !!(data.chat && Array.isArray(data.chat) && !data.name && !data.char_name && !data.character_name && !data.data?.name && !data.data?.char_name && !data.data?.character_name);
 
             const isCharacter =
@@ -892,7 +904,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
       for (const cl of chatLogs) {
         let charId = "";
         const parts = cl.path.split("/");
-        const chatIndex = parts.indexOf("聊天记录");
+        const chatIndex = parts.indexOf("聊天记录") !== -1 ? parts.indexOf("聊天记录") : parts.indexOf("chats");
         if (chatIndex > 0) {
           const charName = parts[chatIndex - 1]; // CharacterName
           const { getSafeFilename } = await import("../lib/db");
@@ -921,12 +933,14 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
         }
 
         const chatName = cl.file.name.replace(/\.[^/.]+$/, "");
-        const finalMessages = cl.data.map((m: any) => ({
-          ...m,
-          is_user: m.is_user !== undefined ? m.is_user : m.name !== chatName,
-          send_date: m.send_date || Date.now(),
-          mes: m.mes || m.text || "",
-        }));
+        const finalMessages = cl.data.filter((m: any) => m && (m.mes !== undefined || m.text !== undefined || m.is_user !== undefined || m.send_date !== undefined || m.swipes !== undefined)).map((m: any) => {
+          const res: any = { ...m };
+          if (res.is_user === undefined) res.is_user = res.name !== chatName;
+          if (res.send_date === undefined) res.send_date = Date.now();
+          if (m.mes !== undefined) res.mes = m.mes;
+          else if (m.text !== undefined) res.mes = m.text;
+          return res;
+        });
 
         const newChat: ChatLog = {
           id: crypto.randomUUID(),
@@ -958,6 +972,8 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
         const { cleanupEmptyFolders } = await import("../lib/db");
         await cleanupEmptyFolders();
         onImported();
+      window.dispatchEvent(new CustomEvent("chatsUpdated"));
+      window.dispatchEvent(new CustomEvent("charactersUpdated"));
       }
     } else if (successCount === 0) {
       setError("未能成功导入任何文件。");
@@ -965,6 +981,8 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
       const { cleanupEmptyFolders } = await import("../lib/db");
       await cleanupEmptyFolders();
       onImported();
+      window.dispatchEvent(new CustomEvent("chatsUpdated"));
+      window.dispatchEvent(new CustomEvent("charactersUpdated"));
       onClose();
     }
   };
@@ -993,7 +1011,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
             const zipEntry = zip.files[relativePath];
             if (
               !zipEntry.dir &&
-              relativePath.match(/\.(png|jpe?g|webp|gif|json|jsonl)$/i)
+              relativePath.match(/\.(png|jpe?g|webp|gif|json|jsonl|txt|js)$/i)
             ) {
               const arrayBuffer = await zipEntry.async("arraybuffer");
 
@@ -1002,10 +1020,14 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
               else if (relativePath.match(/\.jpe?g$/i)) type = "image/jpeg";
               else if (relativePath.endsWith(".webp")) type = "image/webp";
               else if (relativePath.endsWith(".gif")) type = "image/gif";
-              else if (relativePath.endsWith(".json"))
+              else if (relativePath.toLowerCase().endsWith(".json"))
                 type = "application/json";
-              else if (relativePath.endsWith(".jsonl"))
+              else if (relativePath.toLowerCase().endsWith(".jsonl"))
                 type = "application/json";
+              else if (relativePath.toLowerCase().endsWith(".txt"))
+                type = "text/plain";
+              else if (relativePath.toLowerCase().endsWith(".js"))
+                type = "text/javascript";
 
               const extractedFile = new File(
                 [arrayBuffer],
@@ -1029,7 +1051,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
         f.type.startsWith("image/") ||
         f.name.match(/\.(png|jpe?g|webp|gif)$/i) ||
         f.type === "application/json" ||
-        f.name.endsWith(".json")
+        f.name.toLowerCase().endsWith(".json") || f.name.toLowerCase().endsWith(".jsonl") || f.name.toLowerCase().endsWith(".txt") || f.name.toLowerCase().endsWith(".js")
       ) {
         fileArray.push(f);
       }
@@ -1336,7 +1358,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId, initialFile
               type="file"
               ref={fileInputRef}
               onChange={(e) => e.target.files && handleFiles(e.target.files)}
-              accept=".png,.jpg,.jpeg,.webp,.gif,.json,.jsonl,.zip,application/json,application/zip,application/x-zip-compressed"
+              accept=".png,.jpg,.jpeg,.webp,.gif,.json,.jsonl,.txt,.js,.zip,application/json,application/zip,application/x-zip-compressed,text/plain,text/javascript"
               className="hidden"
               multiple
             />
