@@ -4,6 +4,7 @@ import { Upload, Download, Share2, Trash2, Edit2, Check, X as XIcon, ChevronDown
 import { CharacterCard, saveCharacter } from '../lib/db';
 import { useBackHandler } from '../lib/useBackHandler';
 import { motion, AnimatePresence } from 'framer-motion';
+import { getDownloadTooltip } from '../lib/appBridge';
 
 interface Props {
   character: CharacterCard;
@@ -68,7 +69,7 @@ export function CharacterRegexSection({ character, onUpdate }: Props) {
     }
   };
 
-  const handleExport = async (share: boolean = false) => {
+  const handleExport = async (share: boolean = true) => {
     if (regexScripts.length === 0) {
       alert('没有可以导出的正则。');
       return;
@@ -77,26 +78,9 @@ export function CharacterRegexSection({ character, onUpdate }: Props) {
     const jsonStr = JSON.stringify(regexScripts, null, 2);
     const filename = `${character.name}_regex_scripts.json`;
     
-    if (typeof window !== 'undefined' && !!(window as any).Android) {
-        const { exportFileToMIU, shareFileOnAndroid } = await import('../lib/appBridge');
-        const bytes = new TextEncoder().encode(jsonStr);
-        if (share) {
-            await shareFileOnAndroid(filename, bytes.buffer, 'application/json');
-        } else {
-            const savedPath = await exportFileToMIU(filename, bytes.buffer, 'application/json', false);
-            if (savedPath) {
-                alert(`导出正则成功！\n文件已存至：${savedPath.split('Download/')[1] || savedPath}`);
-            }
-        }
-    } else {
-        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(jsonStr);
-        const a = document.createElement('a');
-        a.href = dataStr;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    }
+    const { downloadOrShareFile } = await import('../lib/appBridge');
+    const bytes = new TextEncoder().encode(jsonStr);
+    await downloadOrShareFile(filename, bytes.buffer, 'application/json', share);
   };
 
   const saveRegexScripts = (newScripts: any[]) => {
@@ -166,9 +150,9 @@ export function CharacterRegexSection({ character, onUpdate }: Props) {
           </button>
           {regexScripts.length > 0 && (
             <button
-              onClick={() => handleExport(false)}
+              onClick={() => handleExport(true)}
               className="p-2 rounded-full bg-green-500/20 text-green-300 hover:bg-green-500/30 transition"
-              title="导出全部正则"
+              title={getDownloadTooltip("导出全部正则")}
             >
               <Download className="w-5 h-5" />
             </button>

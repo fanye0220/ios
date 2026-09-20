@@ -1441,17 +1441,8 @@ export function CharacterList({
                     const { injectTavernData } = await import("../lib/png");
                     const newBuffer = injectTavernData(buffer, exportData);
                     const exportFileName = `${safeName}.png`;
-                    if (Capacitor.isNativePlatform()) {
-                        await exportFileToMIU(exportFileName, newBuffer, 'image/png', true);
-                    } else {
-                        const blob = new Blob([newBuffer], { type: 'image/png' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = exportFileName;
-                        a.click();
-                        URL.revokeObjectURL(url);
-                    }
+                    const { downloadOrShareFile } = await import("../lib/appBridge");
+                    await downloadOrShareFile(exportFileName, newBuffer, 'image/png', true);
                     return; // Done
                 } catch (e) {
                     console.error("Failed to inject PNG in single export", e);
@@ -1461,17 +1452,8 @@ export function CharacterList({
             // Fallback to JSON
             const exportFileName = `${safeName}.json`;
             const bytes = new TextEncoder().encode(JSON.stringify(exportData, null, 2));
-            if (Capacitor.isNativePlatform()) {
-                await exportFileToMIU(exportFileName, bytes.buffer, 'application/json', true);
-            } else {
-                const blob = new Blob([bytes.buffer], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = exportFileName;
-                a.click();
-                URL.revokeObjectURL(url);
-            }
+            const { downloadOrShareFile } = await import("../lib/appBridge");
+            await downloadOrShareFile(exportFileName, bytes.buffer, 'application/json', true);
             return;
           }
         }
@@ -1524,10 +1506,18 @@ export function CharacterList({
 
           const finalPath = await finishAndroidZip(zipName);
           if (finalPath) {
-             
-             alert(
-              `批量导出成功！共导出 ${successCount} 个角色资料。\n文件已存至：Download/MIU/${zipName}`,
-             );
+            const { shareLocalFileOnAndroid } = await import("../lib/appBridge");
+            let shared = false;
+            try {
+              shared = await shareLocalFileOnAndroid(finalPath, "application/zip");
+            } catch (e) {
+              console.warn("Failed to share zip:", e);
+            }
+            if (!shared) {
+              alert(
+                `批量导出成功！共导出 ${successCount} 个角色资料。\n文件已存至：Download/MIU/${zipName}`,
+              );
+            }
           } else {
             alert("导出结束时发生错误！");
           }
@@ -1702,15 +1692,12 @@ export function CharacterList({
           type: "blob",
           compression: "STORE",
         });
-        const url = URL.createObjectURL(zipBlob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download =
+        const zipName =
           totalParts > 1
             ? `Tavern_Export_${timestamp}_卷${chunkIndex}.zip`
             : `Tavern_Export_${timestamp}.zip`;
-        a.click();
-        URL.revokeObjectURL(url);
+        const { downloadOrShareFile } = await import("../lib/appBridge");
+        await downloadOrShareFile(zipName, zipBlob, "application/zip", true);
 
         chunkIndex += 1;
         if (i + CHUNK_SIZE < exportTasks.length) {
