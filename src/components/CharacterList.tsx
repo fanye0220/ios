@@ -46,12 +46,17 @@ import {
   deleteFolder,
   SortOption,
   getCachedMeta,
+  getFilteredCharacterCount,
+  getCharacterCategoryPrefix,
+  invalidateCache,
 } from "../lib/db";
 import { useInView } from "../lib/useInView";
 import { useContinuousInView } from "../lib/useContinuousInView";
-import { peekCachedUrl, putCachedBlobUrl, putCachedStaticUrl } from "../lib/thumbCache";
+import { peekCachedUrl, putCachedBlobUrl } from "../lib/thumbCache";
+import { useBackHandler } from "../lib/useBackHandler";
 import { MoveToFolderModal } from "./MoveToFolderModal";
 import { BindQRModal } from "./BindQRModal";
+import { ConfirmBindQRModal } from "./ConfirmBindQRModal";
 import JSZip from "jszip";
 import { injectTavernData } from "../lib/png";
 import { uploadCharacterToCloud } from "../lib/cloudDrive";
@@ -154,11 +159,17 @@ function SortableItemWrapper({
   children,
   disabled,
   className = "",
+  isQR = false,
+  activeDragIsQR = false,
+  activeDragCharId = null,
 }: {
   id: string;
   children: React.ReactNode;
   disabled?: boolean;
   className?: string;
+  isQR?: boolean;
+  activeDragIsQR?: boolean;
+  activeDragCharId?: string | null;
 }) {
   const {
     attributes,
@@ -167,17 +178,36 @@ function SortableItemWrapper({
     transform,
     transition,
     isDragging,
+    isOver,
   } = useSortable({ id, disabled });
 
+  // 判断是否处于 QR 与普通角色的拖拽绑定交互中
+  // 情况 1: 拖拽的是 QR 卡片，而当前卡片是普通角色卡（目标卡）
+  // 情况 2: 拖拽的是普通角色卡，而当前卡片是 QR 卡片（目标卡）
+  const isQRBindingTarget =
+    !isDragging &&
+    ((activeDragIsQR && !isQR) || (!!activeDragCharId && !activeDragIsQR && isQR));
+
+  // 跨类型拖拽绑定交互时，禁止目标卡片和同屏其他卡片位移（禁止卡片逃跑）
+  const shouldSuppressDisplacement =
+    !isDragging &&
+    (activeDragIsQR || (!!activeDragCharId && isQR));
+
   const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    zIndex: isDragging ? 10 : undefined,
+    transform: isDragging
+      ? CSS.Transform.toString(transform)
+      : shouldSuppressDisplacement
+        ? undefined
+        : CSS.Transform.toString(transform),
+    transition: shouldSuppressDisplacement ? undefined : transition,
+    zIndex: isDragging ? 50 : isOver && isQRBindingTarget ? 30 : undefined,
     position: "relative" as const,
     userSelect: "none" as const,
     WebkitUserSelect: "none" as const,
     WebkitTouchCallout: "none" as const,
   };
+
+  const showDropHighlight = isOver && isQRBindingTarget;
 
   return (
     <div
@@ -185,9 +215,21 @@ function SortableItemWrapper({
       style={style}
       {...attributes}
       {...listeners}
-      className={`select-none ${className}`}
+      className={`select-none relative transition-transform duration-150 ${className} ${
+        showDropHighlight
+          ? "ring-4 ring-purple-500 ring-offset-2 ring-offset-slate-900 rounded-2xl shadow-[0_0_25px_rgba(168,85,247,0.7)] scale-[1.04]"
+          : ""
+      }`}
     >
       {children}
+      {showDropHighlight && (
+        <div className="absolute inset-0 z-30 bg-purple-600/35 backdrop-blur-[1px] rounded-2xl flex flex-col items-center justify-center border-2 border-purple-400 pointer-events-none animate-pulse shadow-inner">
+          <Link className="w-8 h-8 text-white drop-shadow-lg mb-1" />
+          <span className="text-[11px] font-bold text-white bg-purple-800/90 px-2.5 py-1 rounded-full shadow-lg border border-purple-400/30">
+            松手立即绑定
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -252,6 +294,8 @@ export function CharacterList({
 }: Props) {
   const [characters, setCharacters] = useState<CharacterCard[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
+  const [paginatedFolders, setPaginatedFolders] = useState<Folder[]>([]);
+  const [totalItems, setTotalItems] = useState(0);
   const [folderPreviews, setFolderPreviews] = useState<
     Record<string, any[]>
   >({});
@@ -321,9 +365,21 @@ export function CharacterList({
 
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
+  const [pendingQRBinding, setPendingQRBinding] = useState<{
+    qrChar: CharacterCard;
+    targetChar: CharacterCard;
+  } | null>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
-  const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const touchStartRef = useRef<{
+    x: number;
+    y: number;
+    time: number;
+    isEdge: boolean;
+  } | null>(null);
+  const isDraggingRef = useRef(false);
+  const lastDragEndTimeRef = useRef(0);
 
   const [imageToCrop, setImageToCrop] = useState<string | null>(null);
   const [crop, setCrop] = useState({ x: 0, y: 0 });
@@ -370,6 +426,12 @@ export function CharacterList({
   const handleCoverUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      const isImg = file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i.test(file.name);
+      if (!isImg) {
+        alert("所选文件不是图片格式，请选择图片文件。");
+        if (coverInputRef.current) coverInputRef.current.value = "";
+        return;
+      }
       const url = URL.createObjectURL(file);
       setImageToCrop(url);
       if (coverInputRef.current) {
@@ -495,9 +557,28 @@ export function CharacterList({
   const [isFoldersExpanded, setIsFoldersExpanded] = useState(
     () => localStorage.getItem("tavern_foldersExpanded") !== "false",
   );
-  const lastScrollY = useRef(0);
   const filterRef = useRef<HTMLDivElement>(null);
   const sortRef = useRef<HTMLDivElement>(null);
+
+  // 如果进入了子文件夹，按返回键（网页后退/安卓返回键/侧滑手势）时返回上一级目录
+  useBackHandler(!!folderId, () => {
+    handleBack();
+    return true;
+  });
+
+  // 如果正处于多选模式，按返回键直接退出多选模式（由于后注册，优先级高于返回上一级目录）
+  useBackHandler(selectionMode, () => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+    return true;
+  });
+
+  // 进入多选模式时，立即唤起并展示顶部操作栏
+  useEffect(() => {
+    if (selectionMode) {
+      setIsHeaderVisible(true);
+    }
+  }, [selectionMode]);
 
   useEffect(() => {
     localStorage.setItem(
@@ -516,25 +597,56 @@ export function CharacterList({
 
   useEffect(() => {
     const scrollContainer = document.getElementById("main-scroll-container");
-    if (!scrollContainer) return;
+    let lastScroll = scrollContainer
+      ? scrollContainer.scrollTop
+      : window.scrollY || document.documentElement.scrollTop || 0;
+    let upAccumulator = 0;
+    let downAccumulator = 0;
 
     const handleScroll = () => {
-      const currentScrollY = scrollContainer.scrollTop;
+      const currentScrollY = scrollContainer
+        ? scrollContainer.scrollTop
+        : window.scrollY || document.documentElement.scrollTop || 0;
+
       setShowScrollTop(currentScrollY > 500);
 
-      if (currentScrollY > lastScrollY.current + 10 && currentScrollY > 100) {
-        setIsHeaderVisible(false);
-      } else if (
-        currentScrollY < lastScrollY.current - 10 ||
-        currentScrollY < 100
-      ) {
+      const delta = currentScrollY - lastScroll;
+
+      // 靠近页面顶部（<=80px）时始终保持显示
+      if (currentScrollY <= 80) {
         setIsHeaderVisible(true);
+        upAccumulator = 0;
+        downAccumulator = 0;
+      } else if (delta < 0) {
+        // 向上滑动（手指往下拉或回滑浏览）：哪怕只滑一点点（累计>=8px），立即弹出顶部操作栏
+        downAccumulator = 0;
+        upAccumulator += Math.abs(delta);
+        if (upAccumulator >= 8) {
+          setIsHeaderVisible(true);
+        }
+      } else if (delta > 0) {
+        // 向下滑动浏览（页面往下滚）：累计滑动超过24px才隐藏，避免微小抖动误触
+        upAccumulator = 0;
+        downAccumulator += delta;
+        if (downAccumulator >= 24) {
+          setIsHeaderVisible(false);
+        }
       }
-      lastScrollY.current = currentScrollY;
+
+      lastScroll = currentScrollY;
     };
 
-    scrollContainer.addEventListener("scroll", handleScroll);
-    return () => scrollContainer.removeEventListener("scroll", handleScroll);
+    if (scrollContainer) {
+      scrollContainer.addEventListener("scroll", handleScroll, { passive: true });
+    }
+    window.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      if (scrollContainer) {
+        scrollContainer.removeEventListener("scroll", handleScroll);
+      }
+      window.removeEventListener("scroll", handleScroll);
+    };
   }, []);
 
   const scrollToTop = () => {
@@ -551,27 +663,65 @@ export function CharacterList({
     onSelectFolder?.(current?.parentId || null);
   };
   const handleRootTouchStart = (e: React.TouchEvent) => {
+    // 拖拽中、弹窗打开、多选模式时不记录手势
+    if (
+      isDraggingRef.current ||
+      activeDragId ||
+      pendingQRBinding ||
+      isBindModalOpen ||
+      isMoveModalOpen ||
+      selectionMode
+    ) {
+      touchStartRef.current = null;
+      return;
+    }
+
+    // 如果触摸起始于卡片、按钮、输入框等可交互元素，属于卡片操作或拖拽准备，绝不当作返回手势
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("button, a, input, [data-sortable-id], [role='button']")) {
+      touchStartRef.current = null;
+      return;
+    }
+
     const touch = e.touches[0];
-    if (touch) {
+    // 允许从左侧边缘及边距空白区域（<= 75px）舒适起划，不再受限于极窄25px
+    if (touch && touch.clientX <= 75) {
       touchStartRef.current = {
         x: touch.clientX,
         y: touch.clientY,
         time: Date.now(),
+        isEdge: true,
       };
+    } else {
+      touchStartRef.current = null;
     }
   };
 
   const handleRootTouchEnd = (e: React.TouchEvent) => {
     const start = touchStartRef.current;
+    touchStartRef.current = null;
     const touch = e.changedTouches[0];
     if (!start || !touch) return;
-    touchStartRef.current = null;
 
+    // 拖拽中、刚结束拖拽（600ms内）或处于多选/弹窗状态时严禁触发手势返回
+    if (
+      isDraggingRef.current ||
+      activeDragId ||
+      Date.now() - lastDragEndTimeRef.current < 600 ||
+      selectionMode ||
+      pendingQRBinding ||
+      isBindModalOpen ||
+      isMoveModalOpen
+    ) {
+      return;
+    }
+
+    const elapsed = Date.now() - start.time;
     const dx = touch.clientX - start.x;
     const dy = touch.clientY - start.y;
 
-    // 进入子文件夹后, 从屏幕左边缘向右轻扫即可返回上一级。
-    if (!selectionMode && folderId && dx > 90 && start.x < 80 && Math.abs(dy) < 70) {
+    // 起始于左侧非卡片区域、快速轻扫(<=400ms)、水平右滑明显(>70px)且垂直偏移小(<60px)才返回上一级
+    if (folderId && elapsed <= 400 && dx > 70 && Math.abs(dy) < 60) {
       handleBack();
     }
   };
@@ -644,13 +794,23 @@ export function CharacterList({
     }),
   );
 
+  const checkIsQR = (char: any): boolean => {
+    if (!char) return false;
+    if (char.isQR === true) return true;
+    if (getCharacterCategoryPrefix(char) === "快速回复") return true;
+    if (char.tags && Array.isArray(char.tags) && char.tags.includes("快速回复")) return true;
+    return false;
+  };
+
+  const activeChar =
+    activeDragId && activeDragId.startsWith("char-")
+      ? characters.find((c) => c.id === activeDragId.replace("char-", ""))
+      : null;
+  const activeIsQR = activeChar ? checkIsQR(activeChar) : false;
+
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-
-    if (sortBy !== "custom") {
-      setSortBy("custom");
-    }
 
     const activeIdStr = String(active.id);
     const overIdStr = String(over.id);
@@ -658,6 +818,10 @@ export function CharacterList({
     const isFolder = activeIdStr.startsWith("folder-");
 
     if (isFolder) {
+      if (sortBy !== "custom") {
+        setSortBy("custom");
+      }
+
       const activeId = activeIdStr.replace("folder-", "");
       const overId = overIdStr.replace("folder-", "");
 
@@ -677,6 +841,28 @@ export function CharacterList({
       const activeId = activeIdStr.replace("char-", "");
       const overId = overIdStr.replace("char-", "");
 
+      const charA = characters.find((c) => c.id === activeId);
+      const charB = characters.find((c) => c.id === overId);
+
+      if (charA && charB) {
+        const isAQR = checkIsQR(charA);
+        const isBQR = checkIsQR(charB);
+
+        // One is QR and the other is a regular character -> Prompt QR binding confirmation!
+        if ((isAQR && !isBQR) || (!isAQR && isBQR)) {
+          const qrChar = isAQR ? charA : charB;
+          const targetChar = isAQR ? charB : charA;
+          setPendingQRBinding({ qrChar, targetChar });
+          setSelectionMode(false);
+          setSelectedIds(new Set());
+          return;
+        }
+      }
+
+      if (sortBy !== "custom") {
+        setSortBy("custom");
+      }
+
       const oldIndex = characters.findIndex((c) => c.id === activeId);
       const newIndex = characters.findIndex((c) => c.id === overId);
 
@@ -691,35 +877,18 @@ export function CharacterList({
     }
   };
 
-  const loadData = () => {
-    getCharacters(
-      page,
-      pageSize,
-      folderId,
-      debouncedSearchQuery,
-      selectedTags,
-      sortBy,
-      false,
-      false
-    ).then(({ characters, total }) => {
-      const totalPages = Math.max(1, Math.ceil(total / pageSize));
-      if (page > totalPages) {
-        setTotalCharacters(total);
-        setPage(totalPages);
-        return;
-      }
-      setCharacters(characters);
-      setTotalCharacters(total);
-    });
-
-    getFolders().then(async (data) => {
+  const loadDataReqIdRef = useRef(0);
+  const loadData = async () => {
+    const reqId = ++loadDataReqIdRef.current;
+    try {
+      const allFoldersData = await getFolders();
       let currentFolders: Folder[] = [];
       if (folderId === null) {
-        currentFolders = data.filter((f) => !f.parentId);
+        currentFolders = allFoldersData.filter((f) => !f.parentId);
         setCurrentFolderName(null);
       } else {
-        currentFolders = data.filter((f) => f.parentId === folderId);
-        const currentFolder = data.find((f) => f.id === folderId);
+        currentFolders = allFoldersData.filter((f) => f.parentId === folderId);
+        const currentFolder = allFoldersData.find((f) => f.id === folderId);
         if (currentFolder) setCurrentFolderName(currentFolder.name);
       }
 
@@ -733,18 +902,90 @@ export function CharacterList({
         return b.createdAt - a.createdAt;
       });
 
+      if (reqId !== loadDataReqIdRef.current) return;
       setFolders(currentFolders);
 
-      // Fetch previews for folders concurrently
-      try {
-        const { getFolderPreviews } = await import("../lib/db");
-        const folderIds = currentFolders.map((f) => f.id);
-        const previews = await getFolderPreviews(folderIds);
-        setFolderPreviewsWithCleanup(previews);
-      } catch (err) {
-        console.error("Failed to load folder previews", err);
+      let currentVisibleFolders = currentFolders;
+      if (debouncedSearchQuery) {
+        const q = debouncedSearchQuery.toLowerCase();
+        currentVisibleFolders = currentFolders.filter((f) =>
+          f.name.toLowerCase().includes(q),
+        );
+      } else if (selectedTags.length > 0) {
+        currentVisibleFolders = [];
       }
-    });
+
+      const totalFolderCount = currentVisibleFolders.length;
+      const totalChars = await getFilteredCharacterCount(
+        folderId,
+        debouncedSearchQuery,
+        selectedTags,
+      );
+      if (reqId !== loadDataReqIdRef.current) return;
+      setTotalCharacters(totalChars);
+
+      const itemsTotal = totalFolderCount + totalChars;
+      setTotalItems(itemsTotal);
+
+      const calculatedTotalPages = Math.max(1, Math.ceil(itemsTotal / pageSize));
+      let currentPage = page;
+      if (page > calculatedTotalPages) {
+        currentPage = calculatedTotalPages;
+        setPage(calculatedTotalPages);
+      }
+
+      const pageStart = (currentPage - 1) * pageSize;
+      const pageEnd = currentPage * pageSize;
+
+      // Slice folders for this page
+      const folderStart = Math.max(0, Math.min(totalFolderCount, pageStart));
+      const folderEnd = Math.max(0, Math.min(totalFolderCount, pageEnd));
+      const pageFolders = currentVisibleFolders.slice(folderStart, folderEnd);
+      setPaginatedFolders(pageFolders);
+
+      // Slice characters for this page
+      const charStart = Math.max(0, pageStart - totalFolderCount);
+      const charEnd = Math.max(0, Math.min(totalChars, pageEnd - totalFolderCount));
+      const charLimit = Math.max(0, charEnd - charStart);
+
+      if (charLimit > 0) {
+        const { characters: fetchedChars } = await getCharacters(
+          1,
+          charLimit,
+          folderId,
+          debouncedSearchQuery,
+          selectedTags,
+          sortBy,
+          false,
+          false,
+          charStart,
+          charLimit,
+        );
+        if (reqId !== loadDataReqIdRef.current) return;
+        setCharacters(fetchedChars);
+      } else {
+        if (reqId !== loadDataReqIdRef.current) return;
+        setCharacters([]);
+      }
+
+      // Fetch previews for visible folders on current page only
+      if (pageFolders.length > 0) {
+        try {
+          const { getFolderPreviews } = await import("../lib/db");
+          const folderIds = pageFolders.map((f) => f.id);
+          const previews = await getFolderPreviews(folderIds);
+          if (reqId !== loadDataReqIdRef.current) return;
+          setFolderPreviewsWithCleanup(previews);
+        } catch (err) {
+          console.error("Failed to load folder previews", err);
+        }
+      } else {
+        if (reqId !== loadDataReqIdRef.current) return;
+        setFolderPreviewsWithCleanup({});
+      }
+    } catch (err) {
+      console.error("Failed to load data in CharacterList", err);
+    }
   };
 
   useEffect(() => {
@@ -753,6 +994,10 @@ export function CharacterList({
     }, 250);
     return () => clearTimeout(t);
   }, [searchQuery]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearchQuery, selectedTags]);
 
   useEffect(() => {
     loadData();
@@ -764,6 +1009,21 @@ export function CharacterList({
     selectedTags,
     sortBy,
     refreshTrigger,
+  ]);
+
+  useEffect(() => {
+    const handleCharactersUpdated = () => {
+      loadData();
+    };
+    window.addEventListener("charactersUpdated", handleCharactersUpdated);
+    return () => window.removeEventListener("charactersUpdated", handleCharactersUpdated);
+  }, [
+    page,
+    pageSize,
+    folderId,
+    debouncedSearchQuery,
+    selectedTags,
+    sortBy,
   ]);
 
   useEffect(() => {
@@ -795,7 +1055,7 @@ export function CharacterList({
     };
   }, [isFilterOpen, isSortOpen]);
 
-  const totalPages = Math.ceil(totalCharacters / pageSize);
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
 
   const toggleSelection = (id: string) => {
     const newSet = new Set(selectedIds);
@@ -805,35 +1065,23 @@ export function CharacterList({
   };
 
   const handleSelectPage = () => {
-    const pageItems =
-      characters.length +
-      (!searchQuery && selectedTags.length === 0 && page === 1
-        ? folders.length
-        : 0);
-
     let allPageSelected = true;
     for (const c of characters) {
       if (!selectedIds.has(c.id)) allPageSelected = false;
     }
-    if (!searchQuery && selectedTags.length === 0 && page === 1) {
-      for (const f of folders) {
-        if (!selectedIds.has(f.id)) allPageSelected = false;
-      }
+    for (const f of paginatedFolders) {
+      if (!selectedIds.has(f.id)) allPageSelected = false;
     }
 
     if (allPageSelected) {
       const newSet = new Set(selectedIds);
       characters.forEach((c) => newSet.delete(c.id));
-      if (!searchQuery && selectedTags.length === 0 && page === 1) {
-        folders.forEach((f) => newSet.delete(f.id));
-      }
+      paginatedFolders.forEach((f) => newSet.delete(f.id));
       setSelectedIds(newSet);
     } else {
       const newSet = new Set(selectedIds);
       characters.forEach((c) => newSet.add(c.id));
-      if (!searchQuery && selectedTags.length === 0 && page === 1) {
-        folders.forEach((f) => newSet.add(f.id));
-      }
+      paginatedFolders.forEach((f) => newSet.add(f.id));
       setSelectedIds(newSet);
     }
   };
@@ -843,24 +1091,28 @@ export function CharacterList({
       1,
       100000,
       folderId,
-      searchQuery,
+      debouncedSearchQuery,
       selectedTags,
       sortBy,
       false,
-      false
+      false,
+      0,
+      100000,
     );
-    const totalItems =
-      allChars.length +
-      (!searchQuery && selectedTags.length === 0 ? folders.length : 0);
+    const visibleFolders = debouncedSearchQuery
+      ? folders.filter((f) =>
+          f.name.toLowerCase().includes(debouncedSearchQuery.toLowerCase()),
+        )
+      : (selectedTags.length > 0 ? [] : folders);
 
-    if (selectedIds.size === totalItems) {
+    const totalSelectable = allChars.length + visibleFolders.length;
+
+    if (selectedIds.size === totalSelectable) {
       setSelectedIds(new Set());
     } else {
       const newSet = new Set<string>();
       allChars.forEach((c) => newSet.add(c.id));
-      if (!searchQuery && selectedTags.length === 0) {
-        folders.forEach((f) => newSet.add(f.id));
-      }
+      visibleFolders.forEach((f) => newSet.add(f.id));
       setSelectedIds(newSet);
     }
   };
@@ -953,22 +1205,32 @@ export function CharacterList({
     return parts.join('/');
   };
 
-  const checkIsQR = (char: CharacterCard) => {
-    return (char as any).isQR === true;
-  };
-
-  const handleBindQR = async (targetCharId: string) => {
-    const qrCharId = Array.from(selectedIds)[0];
-    const qrChar = characters.find((c) => c.id === qrCharId);
-    if (!qrChar) return;
-
+  const executeBindQR = async (
+    qrCharId: string,
+    targetCharId: string,
+    deleteSource: boolean = false,
+  ) => {
     try {
-      const targetChar = await getCharacter(targetCharId);
-      if (!targetChar) return;
+      const fullQrChar = await getCharacter(qrCharId);
+      const fullTargetChar = await getCharacter(targetCharId);
+      if (!fullQrChar || !fullTargetChar) {
+        alert("找不到对应的角色或快速回复卡片");
+        return;
+      }
 
-      const qrData = qrChar.data || {};
-      let newQRs = [];
-      let metadata = null;
+      let qrData = fullQrChar.data || {};
+      if (
+        qrData.data &&
+        typeof qrData.data === "object" &&
+        !Array.isArray(qrData)
+      ) {
+        if (qrData.data.qrList || qrData.data.quick_replies) {
+          qrData = qrData.data;
+        }
+      }
+
+      let newQRs: any[] = [];
+      let metadata: any = null;
       if (Array.isArray(qrData)) {
         newQRs = qrData;
       } else if (qrData.qrList && Array.isArray(qrData.qrList)) {
@@ -977,9 +1239,12 @@ export function CharacterList({
       } else if (qrData.quick_replies && Array.isArray(qrData.quick_replies)) {
         newQRs = qrData.quick_replies;
         metadata = qrData;
+      } else if (qrData.tavern_qr_sets && Array.isArray(qrData.tavern_qr_sets)) {
+        newQRs = qrData.tavern_qr_sets.flatMap((s: any) => s.replies || []);
+        metadata = qrData;
       }
 
-      const updatedChar = { ...targetChar };
+      const updatedChar = { ...fullTargetChar };
       // Deep clone data to ensure it is fully writable and clonable by IDB
       updatedChar.data = JSON.parse(JSON.stringify(updatedChar.data || {}));
 
@@ -992,7 +1257,7 @@ export function CharacterList({
         : [];
       newSets.push({
         id: Date.now().toString() + Math.random().toString(),
-        sourceName: qrChar.name,
+        sourceName: fullQrChar.name,
         replies: JSON.parse(JSON.stringify(newQRs)),
         metadata: metadata ? JSON.parse(JSON.stringify(metadata)) : undefined,
       });
@@ -1000,26 +1265,45 @@ export function CharacterList({
       updatedData.extensions = {
         ...(updatedData.extensions || {}),
         tavern_qr_sets: newSets,
-        quick_replies: newSets.flatMap((s: any) => s.replies),
-        qr_filename: `${qrChar.name}.json`,
+        quick_replies: newSets.flatMap((s: any) => s.replies || []),
+        qr_filename: `${fullQrChar.name}.json`,
       };
 
       setIsBindModalOpen(false);
+      setPendingQRBinding(null);
       setSelectionMode(false);
       setSelectedIds(new Set());
-      await new Promise(r => setTimeout(r, 100));
+      setActiveDragId(null);
+
+      // Optimistically remove the QR card from local state immediately if deleting
+      if (deleteSource) {
+        setCharacters((prev) => prev.filter((c) => c.id !== fullQrChar.id));
+        setTotalCharacters((prev) => Math.max(0, prev - 1));
+        setTotalItems((prev) => Math.max(0, prev - 1));
+      }
 
       await saveCharacter(updatedChar);
-      loadData(); // Refresh the list
+
+      if (deleteSource) {
+        await deleteCharacter(fullQrChar.id);
+      }
+
+      invalidateCache();
+      await loadData();
     } catch (e) {
-      console.error(e);
+      console.error("绑定失败:", e);
       try {
         alert(
-          "绑定失败，请查看控制台: " +
-            (e instanceof Error ? e.message : String(e)),
+          "绑定失败: " + (e instanceof Error ? e.message : String(e)),
         );
       } catch (err) {}
     }
+  };
+
+  const handleBindQR = async (targetCharId: string) => {
+    const qrCharId = Array.from(selectedIds)[0];
+    if (!qrCharId) return;
+    await executeBindQR(qrCharId, targetCharId, false);
   };
 
   const addCharacterToZip = async (
@@ -1805,13 +2089,13 @@ export function CharacterList({
         type="file"
         ref={coverInputRef}
         className="hidden"
-        accept="image/png, image/jpeg, image/webp, image/gif"
+        accept="image/png, image/jpeg, image/webp, image/gif,*/*"
         onChange={handleCoverUpload}
       />
       <motion.header
         initial={{ y: 0 }}
         animate={{ y: isHeaderVisible ? 0 : "-100%" }}
-        transition={{ duration: 0.3, ease: "easeInOut" }}
+        transition={{ duration: 0.22, ease: "easeOut" }}
         className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-xl border-b border-white/10 px-4 pt-[max(2rem,env(safe-area-inset-top))] pb-4 mb-6 cursor-pointer"
         onClick={(e) => {
           if (e.target === e.currentTarget) {
@@ -1877,7 +2161,11 @@ export function CharacterList({
                 </h1>
               )}
               <p className="text-slate-400 text-xs mt-0.5 truncate">
-                管理你的角色卡片 ({totalCharacters})
+                {folders.length > 0 && totalCharacters > 0
+                  ? `${folders.length} 个文件夹 · ${totalCharacters} 个角色`
+                  : folders.length > 0
+                    ? `${folders.length} 个文件夹`
+                    : `管理你的角色卡片 (${totalCharacters})`}
               </p>
             </div>
 
@@ -2223,7 +2511,7 @@ export function CharacterList({
         )}
       </motion.header>
 
-      {totalCharacters === 0 && folders.length === 0 ? (
+      {totalItems === 0 ? (
         <div className="flex flex-col items-center justify-center h-64 text-slate-400 px-4">
           <BookOpen className="w-16 h-16 mb-4 opacity-50" />
           <p>No characters found.</p>
@@ -2235,30 +2523,31 @@ export function CharacterList({
             sensors={sensors}
             collisionDetection={closestCenter}
             onDragStart={(event) => {
-              if (!selectionMode) {
-                setSelectionMode(true);
-                const idStr = String(event.active.id);
-                if (idStr.startsWith("char-")) {
-                  const id = idStr.replace("char-", "");
-                  setSelectedIds(new Set([id]));
-                } else if (idStr.startsWith("folder-")) {
-                  const id = idStr.replace("folder-", "");
-                  setSelectedIds(new Set([id]));
-                }
-              }
+              isDraggingRef.current = true;
+              const idStr = String(event.active.id);
+              setActiveDragId(idStr);
             }}
-            onDragEnd={handleDragEnd}
+            onDragEnd={(event) => {
+              isDraggingRef.current = false;
+              lastDragEndTimeRef.current = Date.now();
+              setActiveDragId(null);
+              handleDragEnd(event);
+            }}
+            onDragCancel={() => {
+              isDraggingRef.current = false;
+              lastDragEndTimeRef.current = Date.now();
+              setActiveDragId(null);
+            }}
           >
             <SortableContext
               items={[
-                ...(!searchQuery && selectedTags.length === 0 && page === 1
-                  ? folders.map((f) => `folder-${f.id}`)
-                  : []),
+                ...paginatedFolders.map((f) => `folder-${f.id}`),
                 ...characters.map((c) => `char-${c.id}`),
               ]}
               strategy={rectSortingStrategy}
             >
-              {!searchQuery && selectedTags.length === 0 && page === 1 && (
+              {(paginatedFolders.length > 0 ||
+                (page === 1 && !searchQuery && selectedTags.length === 0)) && (
                 <div
                   className={
                     viewMode === "list"
@@ -2268,45 +2557,48 @@ export function CharacterList({
                         : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-6"
                   }
                 >
-                  <motion.div
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={() => setIsCreatingFolder(true)}
-                    className={
-                      viewMode === "list"
-                        ? "flex items-center gap-4 p-3 bg-white/5 hover:bg-white/10 rounded-2xl cursor-pointer transition border border-dashed border-white/20"
-                        : viewMode === "masonry" 
-                          ? "flex flex-col items-center gap-2 cursor-pointer group break-inside-avoid mb-4" 
-                          : "flex flex-col items-center gap-2 cursor-pointer group break-inside-avoid"
-                    }
-                  >
-                    <div
+                  {page === 1 && !searchQuery && selectedTags.length === 0 && (
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => setIsCreatingFolder(true)}
                       className={
                         viewMode === "list"
-                          ? "w-12 h-12 bg-white/5 border-2 border-dashed border-white/20 rounded-xl flex items-center justify-center shrink-0"
-                          : "w-full aspect-square bg-white/5 border-2 border-dashed border-white/20 rounded-3xl flex items-center justify-center group-hover:bg-white/10 group-hover:border-white/40 transition"
+                          ? "flex items-center gap-4 p-3 bg-white/5 hover:bg-white/10 rounded-2xl cursor-pointer transition border border-dashed border-white/20"
+                          : viewMode === "masonry" 
+                            ? "flex flex-col items-center gap-2 cursor-pointer group break-inside-avoid mb-4" 
+                            : "flex flex-col items-center gap-2 cursor-pointer group break-inside-avoid"
                       }
                     >
-                      <Plus className="w-8 h-8 text-white/40 group-hover:text-white/60 transition" />
-                    </div>
-                    <span
-                      className={
-                        viewMode === "list"
-                          ? "font-medium text-white/60"
-                          : "text-xs font-medium text-center truncate w-full text-white/60 group-hover:text-white/80"
-                      }
-                    >
-                      新建文件夹
-                    </span>
-                  </motion.div>
+                      <div
+                        className={
+                          viewMode === "list"
+                            ? "w-12 h-12 bg-white/5 border-2 border-dashed border-white/20 rounded-xl flex items-center justify-center shrink-0"
+                            : "w-full aspect-square bg-white/5 border-2 border-dashed border-white/20 rounded-3xl flex items-center justify-center group-hover:bg-white/10 group-hover:border-white/40 transition"
+                        }
+                      >
+                        <Plus className="w-8 h-8 text-white/40 group-hover:text-white/60 transition" />
+                      </div>
+                      <span
+                        className={
+                          viewMode === "list"
+                            ? "font-medium text-white/60"
+                            : "text-xs font-medium text-center truncate w-full text-white/60 group-hover:text-white/80"
+                        }
+                      >
+                        新建文件夹
+                      </span>
+                    </motion.div>
+                  )}
 
-                  {folders.map((folder) => {
+                  {paginatedFolders.map((folder) => {
                     const previews = folderPreviews[folder.id] || [];
                     return (
                       <SortableItemWrapper
                         key={`folder-${folder.id}`}
                         id={`folder-${folder.id}`}
                         disabled={!!searchQuery || selectedTags.length > 0}
+                        activeDragIsQR={activeIsQR}
                       >
                         <motion.div
                           whileHover={{ scale: 1.05 }}
@@ -2319,6 +2611,7 @@ export function CharacterList({
                               if (!selectionMode) {
                                 setSelectionMode(true);
                                 setSelectedIds(new Set([folder.id]));
+                                setIsHeaderVisible(true);
                               }
                             }, 500);
                           }}
@@ -2347,6 +2640,7 @@ export function CharacterList({
                               if (!selectionMode) {
                                 setSelectionMode(true);
                                 setSelectedIds(new Set([folder.id]));
+                                setIsHeaderVisible(true);
                               }
                             }, 500);
                           }}
@@ -2435,6 +2729,9 @@ export function CharacterList({
                       id={`char-${char.id}`}
                       disabled={!!searchQuery || selectedTags.length > 0}
                       className="w-full"
+                      isQR={checkIsQR(char)}
+                      activeDragIsQR={activeIsQR}
+                      activeDragCharId={activeChar?.id || null}
                     >
                       <CharacterCardItem
                         char={char}
@@ -2449,6 +2746,7 @@ export function CharacterList({
                           if (!selectionMode) {
                             setSelectionMode(true);
                             setSelectedIds(new Set([char.id]));
+                            setIsHeaderVisible(true);
                           }
                         }}
                       />
@@ -2468,6 +2766,9 @@ export function CharacterList({
                       key={`char-${char.id}`}
                       id={`char-${char.id}`}
                       disabled={!!searchQuery || selectedTags.length > 0}
+                      isQR={checkIsQR(char)}
+                      activeDragIsQR={activeIsQR}
+                      activeDragCharId={activeChar?.id || null}
                     >
                       <CharacterCardItem
                         char={char}
@@ -2482,6 +2783,7 @@ export function CharacterList({
                           if (!selectionMode) {
                             setSelectionMode(true);
                             setSelectedIds(new Set([char.id]));
+                            setIsHeaderVisible(true);
                           }
                         }}
                       />
@@ -2492,7 +2794,7 @@ export function CharacterList({
             </SortableContext>
           </DndContext>
 
-          {!selectionMode && (totalPages > 1 || characters.length > 0) && (
+          {!selectionMode && (totalPages > 1 || totalItems > 0) && (
             <div className="flex justify-center items-center mt-12 mb-8 text-sm">
               <div className="flex items-center bg-white/5 rounded-xl p-1 border border-white/10">
                 <button
@@ -2578,6 +2880,22 @@ export function CharacterList({
         qrChar={
           characters.find((c) => c.id === Array.from(selectedIds)[0]) || null
         }
+      />
+
+      <ConfirmBindQRModal
+        isOpen={!!pendingQRBinding}
+        onClose={() => setPendingQRBinding(null)}
+        onConfirm={(deleteSource) => {
+          if (pendingQRBinding) {
+            executeBindQR(
+              pendingQRBinding.qrChar.id,
+              pendingQRBinding.targetChar.id,
+              deleteSource,
+            );
+          }
+        }}
+        qrChar={pendingQRBinding?.qrChar || null}
+        targetChar={pendingQRBinding?.targetChar || null}
       />
 
       <AnimatePresence>
@@ -2976,20 +3294,6 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
         getCharacterThumb(char.id).then((thumbBlob) => {
           if (thumbBlob && isMounted) {
             setUrl(putCachedBlobUrl(thumbCacheKey, thumbBlob));
-          } else if (
-            isMounted &&
-            char.localFilePath &&
-            char.localFilePath.match(/\.(png|jpe?g|webp|gif|bmp)$/i)
-          ) {
-            import("../lib/appBridge").then(({ getLocalImageUrl }) => {
-              if (isMounted) {
-                const localUrl = getLocalImageUrl(
-                  char.localFilePath!,
-                  char.updatedAt || char.createdAt,
-                );
-                if (localUrl) setUrl(putCachedStaticUrl(thumbCacheKey, localUrl));
-              }
-            });
           }
         });
       }
@@ -3166,13 +3470,7 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
             return;
           }
           if (char.avatarBlob) setUrlWithFallbackCleanup(URL.createObjectURL(char.avatarBlob), true);
-          else if (char.localFilePath && char.localFilePath.match(/\.(png|jpe?g|webp|gif|bmp)$/i)) {
-            import("../lib/appBridge").then(({ getLocalImageUrl }) => {
-              const localUrl = getLocalImageUrl(char.localFilePath!, char.updatedAt || char.createdAt);
-              if (localUrl) setUrl(localUrl);
-              else setUrl(defaultFallback);
-            });
-          } else if (char.hasBlobsSeparated) {
+          else if (char.hasBlobsSeparated) {
             getCharacterBlob(char.id).then((b) => {
               if (b && b.avatarBlob) setUrlWithFallbackCleanup(URL.createObjectURL(b.avatarBlob), true);
               else setUrl(defaultFallback);

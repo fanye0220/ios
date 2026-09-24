@@ -16,7 +16,7 @@ import { AIRecommender } from './components/AIRecommender';
 import { SettingsModal } from './components/SettingsModal';
 import { ChatViewer } from './components/ChatViewer';
 import { SyncWidget } from './components/SyncWidget';
-import { migrateDatabase } from './lib/db';
+import { migrateDatabase, getFolders } from './lib/db';
 import { useTaggerState } from './lib/taggerState';
 import { isAndroid } from './lib/appBridge';
 import { handleBackRequest } from './lib/useBackHandler';
@@ -232,9 +232,9 @@ export default function App() {
       } else if (state.globalChatViewerId) {
         setGlobalChatViewerId(null); closedSomething = true;
       } else if (state.selectedCharId) {
-        setSelectedCharId(null);
-        setRefreshKey(prev => prev + 1);
+        setSelectedCharId(null); 
         closedSomething = true;
+        setRefreshKey(prev => prev + 1);
       } else if (state.isSidebarOpen) {
         setIsSidebarOpen(false); closedSomething = true;
       } else if (state.selectedFolderId) {
@@ -244,11 +244,9 @@ export default function App() {
         } else if (['trash', 'duplicates', 'autotagger', 'recommender', 'chatviewer'].includes(state.selectedFolderId)) {
           setSelectedFolderId(null);
         } else {
-          import('./lib/db').then(({ getFolders }) => {
-            getFolders().then(allFolders => {
-              const current = allFolders.find(f => f.id === state.selectedFolderId);
-              setSelectedFolderId(current?.parentId || null);
-            });
+          getFolders().then(allFolders => {
+            const current = allFolders.find(f => f.id === state.selectedFolderId);
+            setSelectedFolderId(current?.parentId || null);
           });
         }
       }
@@ -312,9 +310,7 @@ export default function App() {
             } else if (state.globalChatViewerId) {
               setGlobalChatViewerId(null); closedSomething = true;
             } else if (state.selectedCharId) {
-        setSelectedCharId(null);
-        setRefreshKey(prev => prev + 1);
-        closedSomething = true;
+              setSelectedCharId(null); closedSomething = true;
             } else if (state.isSidebarOpen) {
               setIsSidebarOpen(false); closedSomething = true;
             } else if (state.selectedFolderId) {
@@ -324,11 +320,9 @@ export default function App() {
               } else if (['trash', 'duplicates', 'autotagger', 'recommender', 'chatviewer'].includes(state.selectedFolderId)) {
                 setSelectedFolderId(null);
               } else {
-                import('./lib/db').then(({ getFolders }) => {
-                  getFolders().then(allFolders => {
-                    const current = allFolders.find(f => f.id === state.selectedFolderId);
-                    setSelectedFolderId(current?.parentId || null);
-                  });
+                getFolders().then(allFolders => {
+                  const current = allFolders.find(f => f.id === state.selectedFolderId);
+                  setSelectedFolderId(current?.parentId || null);
                 });
               }
             }
@@ -481,6 +475,10 @@ export default function App() {
           setImportModalInitialFiles(null);
         }}
         onImported={() => setRefreshKey(prev => prev + 1)}
+        onNavigateFolder={(id) => {
+          setSelectedFolderId(id);
+          setSelectedCharId(null);
+        }}
         folderId={selectedFolderId}
         initialFiles={importModalInitialFiles}
       />
