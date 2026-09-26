@@ -2,8 +2,9 @@ import { getFallbackAvatar, resolveAvatarUrl } from '../lib/avatar';
 import { useState, useEffect, useRef, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, StickyNote, ChevronRight, Plus, Edit2, Power, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Check, Upload, Send, Loader2, Share2 } from 'lucide-react';
-import { getCharacter, deleteCharacter, saveCharacter, CharacterCard, getFolders, resolveFolderPath, getCachedMeta, getCharacterCategoryPrefix } from '../lib/db';
+import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, StickyNote, ChevronRight, Plus, Edit2, Power, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Check, Upload, Send, Loader2, Share2, Folder as FolderIcon, History } from 'lucide-react';
+import { getCharacter, deleteCharacter, saveCharacter, CharacterCard, getFolders, resolveFolderPath, getCachedMeta, getCharacterCategoryPrefix, isActualCharacterCard } from '../lib/db';
+import { getCardTypeBadgeInfo } from '../lib/cardType';
 import { parseTavernCard } from '../types/tavern';
 import { injectTavernData } from '../lib/png';
 import { normalizeWorldbookEntries } from '../lib/worldbook';
@@ -13,6 +14,8 @@ import { QuickRepliesSection } from './QuickRepliesSection';
 import { CharacterRegexSection } from './CharacterRegexSection';
 import { CharacterChatsSection } from './CharacterChatsSection';
 import { CharacterMemosSection } from './CharacterMemosSection';
+import { CharacterVersionsSection } from './CharacterVersionsSection';
+import { MoveToFolderModal } from './MoveToFolderModal';
 import JSZip from 'jszip';
 import { isAndroid, saveToGallery, shareFileOnAndroid, exportFileToMIU, readLocalFileBuffer, downloadOrShareFile, getDownloadTooltip } from '../lib/appBridge';
 import { multipartPost } from '../lib/multipart';
@@ -30,7 +33,7 @@ interface Props {
 // 连带触发这个 1700+ 行的大组件整体重渲染。
 export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpenChat, onOpenImport, refreshKey }: Props) {
   const [character, setCharacter] = useState<CharacterCard | null>(null);
-  const [activeTab, setActiveTab] = useState<'profile' | 'greetings' | 'worldbook' | 'regex' | 'chats' | 'memos' | 'data_viewer'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'greetings' | 'worldbook' | 'regex' | 'chats' | 'memos' | 'versions' | 'data_viewer'>('profile');
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showExportAlert, setShowExportAlert] = useState(false);
@@ -51,10 +54,45 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
   const [tempVersion, setTempVersion] = useState<string>('');
 
   const [avatarUrl, setAvatarUrl] = useState<string>('');
+  const [resolvedModifiedDate, setResolvedModifiedDate] = useState<Date | null>(null);
+  const [isMoveFolderOpen, setIsMoveFolderOpen] = useState(false);
+  const [currentFolderPath, setCurrentFolderPath] = useState<string>('');
   const savePromiseRef = useRef<Promise<void> | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
+  useEffect(() => {
+    if (character?.folderId) {
+      resolveFolderPath(character.folderId).then(setCurrentFolderPath);
+    } else {
+      setCurrentFolderPath('');
+    }
+  }, [character?.folderId]);
+
+  const handleMoveFolder = async (targetFolderId: string | null) => {
+    if (!character) return;
+    const updated = {
+      ...character,
+      folderId: targetFolderId || undefined,
+      updatedAt: Date.now(),
+    };
+    setCharacter(updated);
+    setIsMoveFolderOpen(false);
+    await saveCharacter(updated);
+    if (targetFolderId) {
+      resolveFolderPath(targetFolderId).then(setCurrentFolderPath);
+    } else {
+      setCurrentFolderPath('');
+    }
+    window.dispatchEvent(new CustomEvent('charactersUpdated'));
+    setStFeedback({
+      type: 'success',
+      msg: targetFolderId ? '已移动到所选分类文件夹' : '已移至主页（未分类）',
+    });
+    setTimeout(() => setStFeedback(null), 2500);
+  };
+
   const hasDetailOverlay = Boolean(
+    isMoveFolderOpen ||
     showDeleteConfirm ||
     showExportAlert ||
     showAvatarViewer ||
@@ -69,6 +107,7 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
   );
 
   const handleDetailBack = () => {
+    if (isMoveFolderOpen) { setIsMoveFolderOpen(false); return true; }
     if (isAddingAlternate) { setIsAddingAlternate(false); return true; }
     if (showAvatarViewer) { setShowAvatarViewer(false); return true; }
     if (showDeleteConfirm) { setShowDeleteConfirm(false); return true; }
@@ -83,13 +122,23 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
     return false;
   };
 
-  useBackHandler(hasDetailOverlay, handleDetailBack);
+  // 关键修复：当角色详情打开时，必须全程拦截返回事件！
+  // 1. 若内部有次级浮层/编辑态，先关闭浮层；
+  // 2. 若无次级浮层，退出角色卡详情（返回列表），绝不穿透导致关闭所属文件夹或回到第 1 页！
+  useBackHandler(true, () => {
+    if (hasDetailOverlay) {
+      return handleDetailBack();
+    }
+    handleBack();
+    return true;
+  });
 
   useEffect(() => {
     getCharacter(id).then(async (char) => {
       setCharacter(char);
       if (char) {
-        const category = getCharacterCategoryPrefix(char);
+        const isActual = isActualCharacterCard(char.data || char);
+        const category = isActual ? '未归类' : getCharacterCategoryPrefix(char);
         if (category === '世界书') {
             setActiveTab('worldbook');
         } else if (category !== '未归类') {
@@ -110,8 +159,41 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
         }
         
         // If it's a standalone worldbook, default to the worldbook tab
-        if (char.data?.entries !== undefined) {
+        if (!isActual && char.data?.entries !== undefined) {
           setActiveTab('worldbook');
+        }
+
+        // Authenticate real modification time from file metadata / PNG chunks
+        try {
+          const { resolveCharacterModifiedTime } = await import('../lib/fileDate');
+          let imgBuf: ArrayBuffer | null = null;
+          if (char.avatarBlob) {
+            try { imgBuf = await char.avatarBlob.arrayBuffer(); } catch (e) {}
+          } else if (char.originalFile) {
+            try { imgBuf = await char.originalFile.arrayBuffer(); } catch (e) {}
+          } else if (char.localFilePath) {
+            try {
+              const { readLocalFileBuffer } = await import('../lib/appBridge');
+              imgBuf = await readLocalFileBuffer(char.localFilePath);
+            } catch (e) {}
+          }
+
+          const resolved = resolveCharacterModifiedTime(char, imgBuf);
+          if (resolved) {
+            setResolvedModifiedDate(new Date(resolved));
+            if (!char.fileModifiedAt || char.fileModifiedAt !== resolved) {
+              char.fileModifiedAt = resolved;
+              saveCharacter(char).catch(console.error);
+            }
+          } else if (char.originalFile?.lastModified) {
+            setResolvedModifiedDate(new Date(char.originalFile.lastModified));
+          } else {
+            setResolvedModifiedDate(null);
+          }
+        } catch (e) {
+          if (char.originalFile?.lastModified) {
+            setResolvedModifiedDate(new Date(char.originalFile.lastModified));
+          }
         }
       }
     });
@@ -300,25 +382,27 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
     // 保证酒馆能识别：普通角色卡若无 data 包装则补 V2 信封；标签统一放进 data.tags。
     // 世界书/美化/预设/QR/脚本等特殊数据不套角色卡信封，保持原样。
     const isCharacterLike =
-      !Array.isArray(exportData) &&
-      typeof exportData === 'object' &&
-      exportData !== null &&
-      exportData.type !== 'script' &&
-      exportData.entries === undefined &&
-      exportData.blur_strength === undefined &&
-      exportData.main_text_color === undefined &&
-      exportData.temperature === undefined &&
-      exportData.prompts === undefined &&
-      exportData.quick_replies === undefined &&
-      exportData.qrList === undefined &&
-      (
-        exportData.spec === 'chara_card_v2' ||
-        exportData.spec === 'chara_card_v3' ||
-        !!exportData.data ||
-        !!exportData.name ||
-        !!exportData.char_name ||
-        !!exportData.character_name
-      );
+      isActualCharacterCard(exportData) ||
+      category === '未归类' ||
+      (!Array.isArray(exportData) &&
+        typeof exportData === 'object' &&
+        exportData !== null &&
+        exportData.type !== 'script' &&
+        exportData.entries === undefined &&
+        exportData.blur_strength === undefined &&
+        exportData.main_text_color === undefined &&
+        exportData.temperature === undefined &&
+        exportData.prompts === undefined &&
+        exportData.quick_replies === undefined &&
+        exportData.qrList === undefined &&
+        (
+          exportData.spec === 'chara_card_v2' ||
+          exportData.spec === 'chara_card_v3' ||
+          !!exportData.data ||
+          !!exportData.name ||
+          !!exportData.char_name ||
+          !!exportData.character_name
+        ));
     if (isCharacterLike) {
       if (!exportData.data || typeof exportData.data !== 'object' || Array.isArray(exportData.data)) {
         exportData = { spec: 'chara_card_v2', spec_version: '2.0', data: exportData };
@@ -542,10 +626,12 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
       <div className="relative z-10 min-h-screen flex flex-col">
         {/* Header */}
         <header className="sticky top-0 p-4 pt-[max(1.75rem,env(safe-area-inset-top))] sm:pt-[max(1.75rem,env(safe-area-inset-top))] flex items-center justify-between bg-black/20 backdrop-blur-xl border-b border-white/10 z-20">
-          <button onClick={handleBack} className="p-2 rounded-full hover:bg-white/10 transition">
-            <ArrowLeft className="w-6 h-6" />
-          </button>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <button onClick={handleBack} className="p-2 rounded-full hover:bg-white/10 transition shrink-0" title="返回">
+              <ArrowLeft className="w-6 h-6" />
+            </button>
+          </div>
+          <div className="flex gap-2 shrink-0">
             {!isPreset && !isStandaloneWorldbook && !isTheme && (
               <button 
                 onClick={handleSendToST} 
@@ -686,7 +772,7 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
               </button>
             </div>
           ) : (
-            <div className="flex items-center justify-center gap-2 mt-4 w-full px-4">
+            <div className="flex items-center justify-center gap-2 mt-4 w-full px-4 flex-wrap">
               <h1 className="text-2xl sm:text-3xl font-bold text-center break-words max-w-full">{character.name}</h1>
               <button 
                 onClick={() => setIsEditingName(true)}
@@ -696,7 +782,47 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
               </button>
             </div>
           )}
-          <p className="text-white/60 text-sm mt-1">v{data.character_version || '1.0'} • {data.creator || 'Unknown Creator'}</p>
+          {/* Version, Creator & Historical Version Badge (Vertically arranged to avoid horizontal crowding) */}
+          <div className="mt-1 flex flex-col items-center justify-center gap-1.5">
+            <div className="text-white/70 text-sm flex items-center justify-center gap-2 flex-wrap [.light-theme_&]:text-slate-600">
+              <button
+                onClick={() => setActiveTab('versions')}
+                className="font-medium text-white/90 hover:text-white transition underline underline-offset-4 decoration-white/25 hover:decoration-white/70 flex items-center gap-1 group cursor-pointer active:scale-95 [.light-theme_&]:text-[#1c1c1e] [.light-theme_&]:decoration-black/20 [.light-theme_&]:hover:text-purple-600 [.light-theme_&]:hover:decoration-purple-400"
+                title="点击查看此角色的版本迭代与溯源历史"
+              >
+                <span>v{data.character_version || '1.0'}</span>
+              </button>
+              <span>•</span>
+              <span>{data.creator || 'Unknown Creator'}</span>
+            </div>
+
+            {/* Historical version hint arranged vertically to prevent horizontal crowding */}
+            {character?.versionHistory && character.versionHistory.length > 0 && (
+              <button
+                onClick={() => setActiveTab('versions')}
+                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 hover:border-purple-500/50 text-[11px] text-purple-300 hover:text-purple-200 transition cursor-pointer active:scale-95 shadow-sm shadow-purple-500/10 [.light-theme_&]:bg-purple-50 [.light-theme_&]:border-purple-200 [.light-theme_&]:text-purple-700 [.light-theme_&]:hover:bg-purple-100"
+                title="点击查看历史演进轨迹与快照对比"
+              >
+                <History className="w-3 h-3 shrink-0" />
+                <span>{character.versionHistory.length} 个历史版本</span>
+              </button>
+            )}
+          </div>
+          
+          {/* Folder Capsule Badge - Unified with iOS/Glassmorphism UI */}
+          <div className="flex items-center justify-center gap-2 mt-2">
+            <button
+              onClick={() => setIsMoveFolderOpen(true)}
+              className="group inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 hover:bg-white/15 border border-white/15 hover:border-white/25 text-xs text-white/90 transition cursor-pointer active:scale-95 backdrop-blur-md shadow-sm [.light-theme_&]:bg-white [.light-theme_&]:border-black/10 [.light-theme_&]:text-[#1c1c1e] [.light-theme_&]:hover:bg-black/[0.03] [.light-theme_&]:shadow-sm"
+              title="点击更改分类文件夹"
+            >
+              <FolderIcon className="w-3.5 h-3.5 text-blue-400 [.light-theme_&]:text-[#007aff] shrink-0 transition-transform group-hover:scale-105" />
+              <span className="font-medium tracking-wide">
+                {currentFolderPath ? `文件夹: ${currentFolderPath}` : '未分类（点击归类）'}
+              </span>
+              <ChevronRight className="w-3 h-3 text-white/40 [.light-theme_&]:text-black/30 group-hover:translate-x-0.5 transition-transform" />
+            </button>
+          </div>
           
           {/* Metadata Drawer */}
           <div className="w-full max-w-md mt-4">
@@ -730,7 +856,9 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
                         本地修改时间 (MODIFIED)
                       </div>
                       <div className="text-sm text-white/80 font-mono">
-                        {character?.originalFile?.lastModified ? new Date(character.originalFile.lastModified).toLocaleString() : '未知'}
+                        {resolvedModifiedDate
+                          ? resolvedModifiedDate.toLocaleString()
+                          : (character?.originalFile?.lastModified ? new Date(character.originalFile.lastModified).toLocaleString() : '未知')}
                       </div>
                     </div>
 
@@ -947,6 +1075,9 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
             ] : []),
             ...(!isPreset && !isStandaloneWorldbook ? [
               { id: 'chats', icon: MessageSquare, label: '聊天记录' },
+            ] : []),
+            ...(!isPreset && !isStandaloneWorldbook ? [
+              { id: 'versions', icon: History, label: '版本迭代' },
             ] : []),
             ...(!isPreset && !isStandaloneWorldbook ? [
               { id: 'memos', icon: StickyNote, label: '备忘录' },
@@ -1267,6 +1398,36 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
                 />
               )}
 
+              {activeTab === 'versions' && character && (
+                <motion.div
+                  key="versions"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <CharacterVersionsSection 
+                    character={character}
+                    avatarUrl={avatarUrl}
+                    onUpdateCharacter={(updated) => {
+                      setCharacter(updated);
+                      window.dispatchEvent(new CustomEvent('charactersUpdated'));
+                    }}
+                    onRefreshDetail={() => {
+                      getCharacter(id).then(async (char) => {
+                        if (char) {
+                          setCharacter(char);
+                          setEditNameValue(char.name);
+                          if (char.avatarBlob) {
+                            setAvatarUrl(URL.createObjectURL(char.avatarBlob));
+                          }
+                        }
+                      });
+                    }}
+                  />
+                </motion.div>
+              )}
+
               {activeTab === 'memos' && character && (
                 <CharacterMemosSection characterId={character.id} />
               )}
@@ -1294,6 +1455,12 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
           }}
         />
       )}
+
+      <MoveToFolderModal
+        isOpen={isMoveFolderOpen}
+        onClose={() => setIsMoveFolderOpen(false)}
+        onMove={handleMoveFolder}
+      />
     </motion.div>
   );
 });

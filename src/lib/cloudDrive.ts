@@ -646,6 +646,87 @@ function guessMimeFromExt(ext: string): string {
 
 
 
+/**
+ * 从云端路径 (如 "角色卡", "角色卡/日常生活", "工具区/预设", "工具区/预设/自定义文件夹")
+ * 映射解析出 App 本地的真正目标用户文件夹 ID。
+ *
+ * 核心规则：
+ * 1. 顶层系统大类 ("角色卡", "工具区", "聊天记录") 并非用户文件夹，还原回 App 时一律剔除；
+ * 2. 工具区小类头 ("预设", "世界书", "美化", "快速回复", "脚本") 属于类型归类，若其后没有更深层的用户子文件夹，也不作为 App 本地文件夹创建；
+ * 3. 只有真正包含用户自定义文件夹路径时，才在 App 中自动查找/创建对应文件夹；
+ * 4. 若无指定文件夹，但存在同名卡自动分类设置，自动继承本地同名卡片的文件夹分类。
+ */
+export async function resolveAppFolderFromCloudPath(
+  folderPathStr?: string | null,
+  charName?: string
+): Promise<string | null> {
+  let targetFolderId: string | null = null;
+
+  if (folderPathStr) {
+    let parts = folderPathStr.split('/').filter(Boolean);
+
+    // 1. 剥离云端顶层系统大类 ("角色卡", "工具区", "聊天记录")
+    const systemBuckets = ['角色卡', 'characters', '工具区', 'tools', '聊天记录', 'chats'];
+    if (parts.length > 0 && systemBuckets.includes(parts[0].toLowerCase())) {
+      parts.shift();
+    }
+
+    // 2. 剥离工具区顶层小类 ("预设", "世界书", "美化", "快速回复", "脚本", "正则脚本")
+    const toolSubHeaders = ['预设', 'preset', '世界书', 'worldbook', '美化', 'theme', '快速回复', 'qr', '脚本', 'script', '正则脚本'];
+    if (parts.length > 0 && toolSubHeaders.includes(parts[0].toLowerCase())) {
+      parts.shift();
+    }
+
+    // 3. 在 App 本地按剩余路径查找或递归创建嵌套文件夹
+    if (parts.length > 0) {
+      const { getFolders, saveFolder } = await import('./db');
+      const allFolders = await getFolders();
+      let currentParentId: string | null = null;
+
+      for (const part of parts) {
+        let found = allFolders.find(
+          (f) => f.name === part && (f.parentId || null) === currentParentId
+        );
+        if (!found) {
+          const newFolder = {
+            id: crypto.randomUUID(),
+            name: part,
+            parentId: currentParentId,
+            createdAt: Date.now(),
+          };
+          await saveFolder(newFolder);
+          allFolders.push(newFolder);
+          found = newFolder;
+        }
+        currentParentId = found.id;
+      }
+      targetFolderId = currentParentId;
+    }
+  }
+
+  // 4. 若无指定文件夹，且开启了「同名卡自动跟随分类」，继承本地已有同名卡的分类文件夹
+  if (!targetFolderId && charName) {
+    const autoCategorizeSameName = localStorage.getItem("miu_auto_categorize_same_name") !== "false";
+    if (autoCategorizeSameName) {
+      const { getCachedMeta } = await import('./db');
+      const existingMeta = await getCachedMeta();
+      const cleanName = charName.trim().toLowerCase();
+      const existingWithFolder = existingMeta.find(
+        (m) =>
+          !m.deletedAt &&
+          m.folderId &&
+          m.name &&
+          m.name.trim().toLowerCase() === cleanName,
+      );
+      if (existingWithFolder && existingWithFolder.folderId) {
+        targetFolderId = existingWithFolder.folderId;
+      }
+    }
+  }
+
+  return targetFolderId;
+}
+
 export async function computeCharacterCloudPathParts(
   char: any,
   allFolders?: any[]
@@ -713,6 +794,7 @@ export async function uploadCharacterToCloud(
   token: string,
   charId: string,
   onProgress?: (msg: string) => void,
+  forceOverwrite: boolean = false,
 ): Promise<'uploaded' | 'skipped' | 'moved'> {
   if (onProgress) onProgress("准备云端数据...");
   const char = await getCharacter(charId);
@@ -732,11 +814,15 @@ export async function uploadCharacterToCloud(
   }
 
   const { pathParts, folderPath } = await computeCharacterCloudPathParts(char);
-  const { getChatsForCharacter } = await import('./db');
+  const { getChatsForCharacter, getMemosForCharacter } = await import('./db');
   const extraAvatars = (char.avatarHistory || []).filter(b => !char.avatarBlob || !(b.size === char.avatarBlob.size && b.type === char.avatarBlob.type));
   
   const hasExtraAvatars = extraAvatars.length > 0;
   const chats = await getChatsForCharacter(char.id);
+  const memos = await getMemosForCharacter(char.id);
+  const hasMemos = memos.length > 0;
+  const versionHistory = char.versionHistory || [];
+  const hasVersions = versionHistory.length > 0;
 
   const targetParentId = await resolveDriveFolderPath(token, folderId, pathParts);
 
@@ -790,10 +876,73 @@ export async function uploadCharacterToCloud(
         }
       }
     }
+
+    if (hasVersions) {
+      const versionsFolder = zip.folder("版本历史");
+      if (versionsFolder) {
+        for (let i = 0; i < versionHistory.length; i++) {
+          const snap = versionHistory[i];
+          const snapSafeName = (snap.versionName || `v${i + 1}`).replace(/[\\/:*?"<>|]/g, "_");
+          if (snap.completeCardPngBlob) {
+            versionsFolder.file(`${snapSafeName}.png`, snap.completeCardPngBlob);
+          } else if (snap.avatarBlob) {
+            try {
+              const arrayBuf = await snap.avatarBlob.arrayBuffer();
+              const injected = injectTavernData(arrayBuf, snap.data);
+              versionsFolder.file(`${snapSafeName}.png`, injected);
+            } catch(e) {
+              versionsFolder.file(`${snapSafeName}.json`, JSON.stringify(snap.data, null, 2));
+            }
+          } else {
+            versionsFolder.file(`${snapSafeName}.json`, JSON.stringify(snap.data, null, 2));
+          }
+        }
+      }
+    }
+    
+    if (hasMemos) {
+      const memosFolder = zip.folder("备忘录与剧场");
+      if (memosFolder) {
+        for (let i = 0; i < memos.length; i++) {
+          const m = memos[i];
+          const mSafeName = (m.content || 'memo').replace(/[\\/:*?"<>|]/g, "_");
+          if (m.type === 'text') {
+            memosFolder.file(`memo_${i + 1}_${m.id}.md`, m.content);
+          } else if (m.blob) {
+            memosFolder.file(`memo_${i + 1}_${mSafeName}`, m.blob);
+          }
+        }
+      }
+    }
+
+    const qrExport = buildQuickRepliesExport(char.data, safeName);
+    if (qrExport) {
+      zip.file(`${safeName}_qr.json`, JSON.stringify(qrExport, null, 2));
+    }
     
     const studioMeta: any = {
       folderPath,
-      createdAt: char.createdAt
+      createdAt: char.createdAt,
+      memos: memos.map((m, i) => ({
+        id: m.id,
+        type: m.type,
+        content: m.content,
+        isPinned: m.isPinned,
+        order: m.order,
+        createdAt: m.createdAt,
+        fileRef: m.type === 'text' ? `memo_${i + 1}_${m.id}.md` : `memo_${i + 1}_${(m.content || 'memo').replace(/[\\/:*?"<>|]/g, "_")}`
+      })),
+      versionHistory: versionHistory.map(v => ({
+        id: v.id,
+        versionName: v.versionName,
+        note: v.note,
+        createdAt: v.createdAt,
+        fileModifiedAt: v.fileModifiedAt,
+        cardName: v.cardName,
+        sourceCharId: v.sourceCharId,
+        tags: v.tags,
+        data: v.data,
+      }))
     };
     if ((char as any).sourceUrl) studioMeta.sourceUrl = (char as any).sourceUrl;
     
@@ -811,7 +960,7 @@ export async function uploadCharacterToCloud(
   
   const hasHistory = extraAvatars.length > 0;
   const hasChats = Boolean(chats && chats.length > 0);
-  if (!hasHistory && !hasChats && char.avatarBlob && (char.avatarBlob.type === 'image/png' || !char.avatarBlob.type)) {
+  if (!hasHistory && !hasChats && !hasVersions && !hasMemos && char.avatarBlob && (char.avatarBlob.type === 'image/png' || !char.avatarBlob.type)) {
     if (onProgress) onProgress("打包角色数据(PNG)...");
     try {
       const buffer = await char.avatarBlob.arrayBuffer();
@@ -825,7 +974,7 @@ export async function uploadCharacterToCloud(
       fileName = `${safeName}_${char.id}.zip`;
       mimeType = 'application/zip';
     }
-  } else if (!hasHistory && !hasChats && !char.avatarBlob) {
+  } else if (!hasHistory && !hasChats && !hasVersions && !char.avatarBlob) {
     if (onProgress) onProgress("打包角色数据(JSON)...");
     finalBlob = new Blob([JSON.stringify(char.data, null, 2)], { type: 'application/json' });
     fileName = `${safeName}_${char.id}.json`;
@@ -839,10 +988,27 @@ export async function uploadCharacterToCloud(
 
   
   if (onProgress) onProgress("计算数据指纹...");
-  const dataStr = JSON.stringify(char.data);
-  const avatarInfo = char.avatarBlob ? char.avatarBlob.size.toString() : 'no-avatar';
-  const historyInfo = extraAvatars.length > 0 ? extraAvatars.map(b => b.size.toString()).join(',') : 'no-history';
-  const rawHashData = dataStr + "|" + avatarInfo + "|" + historyInfo;
+  const dataStr = JSON.stringify(char.data || {});
+  const avatarInfo = char.avatarBlob ? `${char.avatarBlob.size}_${char.avatarBlob.type}` : 'no-avatar';
+  const historyInfo = extraAvatars.length > 0 ? extraAvatars.map(b => `${b.size}_${b.type}`).join(',') : 'no-history';
+  const versionInfo = hasVersions ? versionHistory.map(v => `${v.id}_${v.fileModifiedAt || v.createdAt}_${v.versionName || ''}`).join(',') : 'no-versions';
+  const memoInfo = hasMemos ? memos.map(m => `${m.id}_${m.content || ''}_${m.isPinned ? 1 : 0}_${m.order || 0}_${m.blob ? m.blob.size : 0}_${m.createdAt || 0}`).join(',') : 'no-memos';
+  const chatInfo = chats.length > 0 ? chats.map(c => `${c.id}_${c.messages?.length || 0}_${c.name || ''}`).join(',') : 'no-chats';
+  
+  const rawHashData = [
+    char.id,
+    char.name || '',
+    char.updatedAt || 0,
+    (char.tags || []).join(','),
+    folderPath,
+    dataStr,
+    avatarInfo,
+    historyInfo,
+    versionInfo,
+    memoInfo,
+    chatInfo
+  ].join("|");
+
   const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(rawHashData));
   const contentHash = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 
@@ -907,7 +1073,7 @@ export async function uploadCharacterToCloud(
     const currentCloudFolder = existingFile.appProperties?.folderPath || '';
     const folderChanged = currentCloudFolder !== folderPath || existingParents.length !== 1 || existingParents[0] !== targetParentId;
 
-    if (existingFile.appProperties?.contentHash === contentHash) {
+    if (!forceOverwrite && existingFile.appProperties?.contentHash === contentHash) {
       if (folderChanged) {
         if (onProgress) onProgress("内容一致，正在同步移动并更新云端文件夹嵌套...");
         await moveCloudFileToParent(existingFile.id, existingParents);
@@ -966,7 +1132,7 @@ export async function uploadCharacterToCloud(
        const exactMatches = searchDataName.files.filter((f:any) => f.appProperties?.charName === finalCharName || f.appProperties?.charName?.startsWith(finalCharName + '_'));
        if (exactMatches.length > 0) {
           const identical = exactMatches.find((f:any) => f.appProperties?.contentHash === contentHash);
-          if (identical) {
+          if (!forceOverwrite && identical) {
              const idParents = Array.isArray(identical.parents) ? identical.parents : [];
              const idFolder = identical.appProperties?.folderPath || '';
              const idFolderChanged = idFolder !== folderPath || idParents.length !== 1 || idParents[0] !== targetParentId;
@@ -1080,12 +1246,22 @@ export async function downloadCloudCharacter(token: string, fileId: string, file
      let zipMeta: any = null;
      let zipAvatarHistory: Blob[] = [];
      let zipChats: any[] = [];
+     const zipVersionBlobs = new Map<string, Blob>();
      for (const [filename, file] of Object.entries(zip.files)) {
        if (file.dir) continue;
        const lowerName = filename.toLowerCase();
        if (lowerName === 'studio_meta.json' || lowerName.endsWith('/studio_meta.json')) {
          const text = await file.async('text');
          try { zipMeta = JSON.parse(text); } catch(e){}
+       } else if (
+         lowerName.startsWith('版本历史/') ||
+         lowerName.includes('/版本历史/') ||
+         lowerName.startsWith('versions/') ||
+         lowerName.includes('/versions/')
+       ) {
+         const vBase = filename.split('/').pop() || '';
+         const b = await file.async('blob');
+         zipVersionBlobs.set(vBase, b);
        } else if (
          lowerName.startsWith('替换头像/') ||
          lowerName.includes('/替换头像/') ||
@@ -1183,17 +1359,80 @@ export async function downloadCloudCharacter(token: string, fileId: string, file
        }
      }
      
-     return { jsonData: zipJson, avatarBlob: zipAvatar, studioMeta: zipMeta, avatarHistory: zipAvatarHistory, chats: zipChats };
+     let zipVersionHistory: any[] = [];
+     if (zipMeta && Array.isArray(zipMeta.versionHistory)) {
+       zipVersionHistory = zipMeta.versionHistory.map((snap: any, index: number) => {
+         const snapSafeName = (snap.versionName || `v${index + 1}`).replace(/[\\/:*?"<>|]/g, "_");
+         const vBlob = zipVersionBlobs.get(`${snapSafeName}.png`) || zipVersionBlobs.get(`${snap.id}.png`);
+         return {
+           ...snap,
+           avatarBlob: vBlob,
+           completeCardPngBlob: vBlob,
+         };
+       });
+     }
+
+     let zipMemos: any[] = [];
+     const memoFiles = new Map<string, { file: any, isText: boolean }>();
+     for (const [filename, file] of Object.entries(zip.files)) {
+       if (file.dir) continue;
+       const lowerName = filename.toLowerCase();
+       if (
+         lowerName.startsWith('备忘录与剧场/') ||
+         lowerName.includes('/备忘录与剧场/') ||
+         lowerName.startsWith('memos/') ||
+         lowerName.includes('/memos/')
+       ) {
+         const mBase = filename.split('/').pop() || '';
+         memoFiles.set(mBase, { file, isText: lowerName.endsWith('.md') || lowerName.endsWith('.txt') });
+       }
+     }
+
+     if (zipMeta && Array.isArray(zipMeta.memos)) {
+       for (const mMeta of zipMeta.memos) {
+         let memoBlob: Blob | undefined = undefined;
+         let memoContent = mMeta.content || '';
+         if (mMeta.fileRef) {
+           const entry = memoFiles.get(mMeta.fileRef);
+           if (entry) {
+             if (mMeta.type === 'text') {
+               try {
+                 memoContent = await entry.file.async('text');
+               } catch (e) {}
+             } else {
+               memoBlob = await entry.file.async('blob');
+             }
+           }
+         }
+         zipMemos.push({
+           id: mMeta.id || crypto.randomUUID(),
+           characterId: '',
+           type: mMeta.type || 'text',
+           content: memoContent,
+           blob: memoBlob,
+           isPinned: mMeta.isPinned,
+           order: mMeta.order,
+           createdAt: mMeta.createdAt || Date.now(),
+         });
+       }
+     }
+     
+     return { jsonData: zipJson, avatarBlob: zipAvatar, studioMeta: zipMeta, avatarHistory: zipAvatarHistory, chats: zipChats, versionHistory: zipVersionHistory, memos: zipMemos };
   };
 
+  let versionHistory: any[] = [];
+  let memos: any[] = [];
+
   if (fName.endsWith('.zip')) {
-     if (onProgress) onProgress("正在解压卡片...");
+     if (onProgress) onProgress("正在解压卡片与备忘录...");
      const res = await tryParseZip(blob);
      jsonData = res.jsonData;
      avatarBlob = res.avatarBlob;
      studioMeta = res.studioMeta;
      if (res.avatarHistory) avatarHistory = res.avatarHistory;
      if (res.chats) chats = res.chats;
+     if (res.versionHistory) versionHistory = res.versionHistory;
+     if (res.memos) memos = res.memos;
   } else if (fName.endsWith('.json')) {
      const text = await blob.text();
      jsonData = JSON.parse(text);
@@ -1309,7 +1548,7 @@ export async function downloadCloudCharacter(token: string, fileId: string, file
   }
 
   if (!jsonData) throw new Error("无效的云端卡片格式或未找到卡片数据");
-  return { jsonData, avatarBlob, studioMeta, avatarHistory, chats };
+  return { jsonData, avatarBlob, studioMeta, avatarHistory, chats, versionHistory, memos };
 }
 export async function syncLibraryToCloud(token: string, onProgress?: (msg: string) => void) {
   if (onProgress) onProgress('准备同步到云端卡库...');

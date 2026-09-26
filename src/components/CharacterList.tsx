@@ -1,6 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import { getFallbackAvatar, resolveAvatarUrl } from "../lib/avatar";
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Masonry from 'react-masonry-css';
 import {
@@ -18,6 +18,7 @@ import {
   List,
   Filter,
   Folder as FolderIcon,
+  Home,
   Menu,
   Edit2,
   MoreVertical,
@@ -54,6 +55,7 @@ import { useInView } from "../lib/useInView";
 import { useContinuousInView } from "../lib/useContinuousInView";
 import { peekCachedUrl, putCachedBlobUrl } from "../lib/thumbCache";
 import { useBackHandler } from "../lib/useBackHandler";
+import { getCardBadgeInfo } from "../lib/cardBadge";
 import { MoveToFolderModal } from "./MoveToFolderModal";
 import { BindQRModal } from "./BindQRModal";
 import { ConfirmBindQRModal } from "./ConfirmBindQRModal";
@@ -65,8 +67,7 @@ import {
   DndContext,
   closestCenter,
   KeyboardSensor,
-  MouseSensor,
-  TouchSensor,
+  PointerSensor,
   useSensor,
   useSensors,
   DragEndEvent,
@@ -79,80 +80,8 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-
-function FolderCover({
-  folder,
-  previews,
-  viewMode,
-}: {
-  folder: Folder;
-  previews: any[];
-  viewMode: string;
-}) {
-  const [url, setUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (folder.avatarBlob) {
-      const objectUrl = URL.createObjectURL(folder.avatarBlob);
-      setUrl(objectUrl);
-      return () => URL.revokeObjectURL(objectUrl);
-    } else {
-      setUrl(null);
-    }
-  }, [folder.avatarBlob]);
-
-  if (url) {
-    return (
-      <div className="w-full h-full bg-black/20 flex items-center justify-center relative overflow-hidden pointer-events-none">
-        <img
-          src={url}
-          alt=""
-          className="w-full h-full object-cover relative z-10 pointer-events-none"
-        />
-      </div>
-    );
-  }
-
-  if (previews.length > 0) {
-    return (
-      <div
-        className={`w-full h-full grid grid-cols-2 grid-rows-2 gap-1 pointer-events-none ${viewMode === "list" ? "p-1.5" : "p-3"}`}
-      >
-        {[0, 1, 2, 3].map((i) => (
-          <div
-            key={i}
-            className="w-full h-full bg-black/20 rounded-md overflow-hidden pointer-events-none"
-          >
-            {previews[i] && (
-              <img
-                src={typeof previews[i] === 'string' ? previews[i] : previews[i].url}
-                alt=""
-                className="w-full h-full object-cover pointer-events-none"
-                onError={(e) => {
-                    const item = previews[i];
-                    if (item && typeof item !== 'string' && item.seed) {
-                       const category = item.tags?.join(',') || (item.isTool ? 'tool' : undefined);
-                       e.currentTarget.src = getFallbackAvatar(item.seed, category);
-                       e.currentTarget.style.display = 'block';
-                    } else if (!e.currentTarget.src.startsWith('data:image/svg+xml')) {
-                       e.currentTarget.src = getFallbackAvatar(folder.id + i);
-                       e.currentTarget.style.display = 'block';
-                   } else {
-                       e.currentTarget.style.display = 'none';
-                   }
-                }}
-              />
-            )}
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <FolderIcon className="w-1/2 h-1/2 text-white/50 pointer-events-none" />
-  );
-}
+import { FrostedFolderCover, FrostedNewFolderCover } from "./FrostedFolderCover";
+import { FolderCoverPickerModal } from "./FolderCoverPickerModal";
 
 function SortableItemWrapper({
   id,
@@ -188,26 +117,35 @@ function SortableItemWrapper({
     !isDragging &&
     ((activeDragIsQR && !isQR) || (!!activeDragCharId && !activeDragIsQR && isQR));
 
-  // 跨类型拖拽绑定交互时，禁止目标卡片和同屏其他卡片位移（禁止卡片逃跑）
+  // 判断是否拖拽角色卡到文件夹目标上
+  const isFolderDropTarget =
+    !isDragging &&
+    !!activeDragCharId &&
+    id.startsWith("folder-");
+
+  // 跨类型拖拽（绑定或移动进文件夹）交互时，禁止目标卡片和同屏其他卡片位移（禁止卡片逃跑）
   const shouldSuppressDisplacement =
     !isDragging &&
-    (activeDragIsQR || (!!activeDragCharId && isQR));
+    (activeDragIsQR || (!!activeDragCharId && isQR) || isFolderDropTarget);
 
-  const style = {
+  const style: React.CSSProperties = {
     transform: isDragging
       ? CSS.Transform.toString(transform)
       : shouldSuppressDisplacement
         ? undefined
         : CSS.Transform.toString(transform),
-    transition: shouldSuppressDisplacement ? undefined : transition,
-    zIndex: isDragging ? 50 : isOver && isQRBindingTarget ? 30 : undefined,
-    position: "relative" as const,
-    userSelect: "none" as const,
-    WebkitUserSelect: "none" as const,
-    WebkitTouchCallout: "none" as const,
+    transition: isDragging ? 'none' : (shouldSuppressDisplacement ? undefined : transition),
+    opacity: isDragging ? 0.7 : 1,
+    zIndex: isDragging ? 50 : isOver && (isQRBindingTarget || isFolderDropTarget) ? 30 : undefined,
+    position: "relative",
+    userSelect: "none",
+    WebkitUserSelect: "none",
+    WebkitTouchCallout: "none",
+    willChange: isDragging ? "transform" : undefined,
   };
 
   const showDropHighlight = isOver && isQRBindingTarget;
+  const showFolderDropHighlight = isOver && isFolderDropTarget;
 
   return (
     <div
@@ -218,7 +156,9 @@ function SortableItemWrapper({
       className={`select-none relative transition-transform duration-150 ${className} ${
         showDropHighlight
           ? "ring-4 ring-purple-500 ring-offset-2 ring-offset-slate-900 rounded-2xl shadow-[0_0_25px_rgba(168,85,247,0.7)] scale-[1.04]"
-          : ""
+          : showFolderDropHighlight
+            ? "ring-4 ring-blue-500 ring-offset-2 ring-offset-slate-900 rounded-2xl shadow-[0_0_25px_rgba(59,130,246,0.7)] scale-[1.04]"
+            : ""
       }`}
     >
       {children}
@@ -227,6 +167,14 @@ function SortableItemWrapper({
           <Link className="w-8 h-8 text-white drop-shadow-lg mb-1" />
           <span className="text-[11px] font-bold text-white bg-purple-800/90 px-2.5 py-1 rounded-full shadow-lg border border-purple-400/30">
             松手立即绑定
+          </span>
+        </div>
+      )}
+      {showFolderDropHighlight && (
+        <div className="absolute inset-0 z-30 bg-blue-600/35 backdrop-blur-[1px] rounded-2xl flex flex-col items-center justify-center border-2 border-blue-400 pointer-events-none animate-pulse shadow-inner">
+          <FolderInput className="w-8 h-8 text-white drop-shadow-lg mb-1" />
+          <span className="text-[11px] font-bold text-white bg-blue-800/90 px-2.5 py-1 rounded-full shadow-lg border border-blue-400/30">
+            松手移入文件夹
           </span>
         </div>
       )}
@@ -282,7 +230,11 @@ interface Props {
   onSelectFolder?: (id: string | null) => void;
   onOpenSidebar?: () => void;
   refreshTrigger?: number;
+  isDetailOpen?: boolean;
 }
+
+// 记忆每个文件夹所在的分页位置，避免在卡片详情或子文件夹返回时丢失第5页等当前页码
+const folderPageMemory = new Map<string, number>();
 
 export function CharacterList({
   folderId,
@@ -291,10 +243,18 @@ export function CharacterList({
   onSelectFolder,
   onOpenSidebar,
   refreshTrigger,
+  isDetailOpen = false,
 }: Props) {
   const [characters, setCharacters] = useState<CharacterCard[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [paginatedFolders, setPaginatedFolders] = useState<Folder[]>([]);
+  const [folderPaths, setFolderPaths] = useState<Record<string, string>>({});
+  const [folderCounts, setFolderCounts] = useState<
+    Record<string, { chars: number; subfolders: number }>
+  >({});
+  const [folderAncestors, setFolderAncestors] = useState<
+    Record<string, Array<{ id: string; name: string }>>
+  >({});
   const [totalItems, setTotalItems] = useState(0);
   const [folderPreviews, setFolderPreviews] = useState<
     Record<string, any[]>
@@ -302,18 +262,75 @@ export function CharacterList({
   // 每次刷新文件夹预览图都会重新生成一批 blob URL, 这里记一份"当前挂着的"
   // 引用, 下次覆盖前先批量释放旧的, 避免每次翻页/切换文件夹都泄漏一批。
   const folderPreviewUrlsRef = useRef<string[]>([]);
-  const setFolderPreviewsWithCleanup = (previews: Record<string, any[]>) => {
-    const oldUrls = folderPreviewUrlsRef.current;
-    const newUrls = Object.values(previews).flat().map(p => typeof p === 'string' ? p : p.url);
-    folderPreviewUrlsRef.current = newUrls;
-    setFolderPreviews(previews);
-    if (oldUrls.length > 0) {
-      requestAnimationFrame(() => {
-        oldUrls.forEach((u) => {
-          if (u && u.startsWith("blob:")) URL.revokeObjectURL(u);
+  const setFolderPreviewsWithCleanup = (newPreviews: Record<string, any[]>) => {
+    setFolderPreviews((prevPreviews) => {
+      const mergedPreviews: Record<string, any[]> = {};
+      const urlsToRevoke: string[] = [];
+
+      const allFolderIds = new Set([
+        ...Object.keys(prevPreviews || {}),
+        ...Object.keys(newPreviews || {}),
+      ]);
+
+      for (const fId of allFolderIds) {
+        const oldItems = prevPreviews[fId] || [];
+        const newItems = newPreviews[fId] || [];
+
+        if (newItems.length === 0) {
+          oldItems.forEach((it) => {
+            const u = typeof it === "string" ? it : it?.url;
+            if (u && u.startsWith("blob:")) urlsToRevoke.push(u);
+          });
+          continue;
+        }
+
+        if (oldItems.length === 0) {
+          mergedPreviews[fId] = newItems;
+          continue;
+        }
+
+        // 检查新旧预览项的特征/Seed/路径是否完全一致
+        const isIdentical =
+          oldItems.length === newItems.length &&
+          oldItems.every((oldIt, idx) => {
+            const newIt = newItems[idx];
+            const oldSeed = typeof oldIt === "string" ? oldIt : oldIt?.seed || oldIt?.url;
+            const newSeed = typeof newIt === "string" ? newIt : newIt?.seed || newIt?.url;
+            return oldSeed && newSeed && oldSeed === newSeed;
+          });
+
+        if (isIdentical) {
+          // 文件夹预览无变化: 保留原 URL 引用, 绝不触发相邻文件夹封面的刷新/闪烁!
+          mergedPreviews[fId] = oldItems;
+          newItems.forEach((it) => {
+            const u = typeof it === "string" ? it : it?.url;
+            if (u && u.startsWith("blob:")) urlsToRevoke.push(u);
+          });
+        } else {
+          // 真正的封面修改: 使用新 URL, 释放旧 URL
+          mergedPreviews[fId] = newItems;
+          oldItems.forEach((it) => {
+            const u = typeof it === "string" ? it : it?.url;
+            if (u && u.startsWith("blob:")) urlsToRevoke.push(u);
+          });
+        }
+      }
+
+      const allCurrentUrls = Object.values(mergedPreviews)
+        .flat()
+        .map((p) => (typeof p === "string" ? p : p.url));
+      folderPreviewUrlsRef.current = allCurrentUrls;
+
+      if (urlsToRevoke.length > 0) {
+        requestAnimationFrame(() => {
+          urlsToRevoke.forEach((u) => {
+            if (u && u.startsWith("blob:")) URL.revokeObjectURL(u);
+          });
         });
-      });
-    }
+      }
+
+      return mergedPreviews;
+    });
   };
   useEffect(() => {
     return () => {
@@ -323,8 +340,14 @@ export function CharacterList({
     };
   }, []);
   const [totalCharacters, setTotalCharacters] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageInputValue, setPageInputValue] = useState("1");
+
+  const folderKey = folderId || "root";
+  const [page, setPage] = useState<number>(() => {
+    return folderPageMemory.get(folderKey) || 1;
+  });
+  const [pageInputValue, setPageInputValue] = useState(() =>
+    String(folderPageMemory.get(folderKey) || 1),
+  );
 
   useEffect(() => {
     setPageInputValue(page.toString());
@@ -355,6 +378,12 @@ export function CharacterList({
   const [allTags, setAllTags] = useState<string[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+
+  useEffect(() => {
+    if (!debouncedSearchQuery && selectedTags.length === 0) {
+      folderPageMemory.set(folderKey, page);
+    }
+  }, [folderKey, page, debouncedSearchQuery, selectedTags.length]);
   const [isEditingTags, setIsEditingTags] = useState(false);
   const [editingTagValue, setEditingTagValue] = useState<{
     old: string;
@@ -386,6 +415,7 @@ export function CharacterList({
   const [zoom, setZoom] = useState(1);
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null);
   const [isCropping, setIsCropping] = useState(false);
+  const [coverPickerFolder, setCoverPickerFolder] = useState<Folder | null>(null);
 
   const getCroppedImgBlob = async (
     imageSrc: string,
@@ -534,6 +564,51 @@ export function CharacterList({
     },
     [],
   );
+
+  const handleSetCharacterAsFolderCover = async (folder: Folder, char: CharacterCard) => {
+    try {
+      let avatarBlob = char.avatarBlob;
+      if (!avatarBlob && char.hasBlobsSeparated) {
+        const blobs = await getCharacterBlob(char.id);
+        avatarBlob = blobs?.avatarBlob;
+      }
+      if (!avatarBlob && char.avatarUrlFallback) {
+        try {
+          const res = await fetch(char.avatarUrlFallback);
+          if (res.ok) avatarBlob = await res.blob();
+        } catch (e) {}
+      }
+      if (avatarBlob) {
+        let compressedBlob = avatarBlob;
+        try {
+          compressedBlob = await compressImage(new File([avatarBlob], "cover.png", { type: avatarBlob.type || "image/png" }), 400);
+        } catch (e) {}
+        const updatedFolder: Folder = { ...folder, avatarBlob: compressedBlob };
+        await saveFolder(updatedFolder);
+        setFolders((prev) => prev.map((f) => (f.id === folder.id ? updatedFolder : f)));
+        setCoverPickerFolder(null);
+        setSelectionMode(false);
+        setSelectedIds(new Set());
+        loadData();
+      }
+    } catch (err) {
+      console.error("Failed to set character as folder cover:", err);
+    }
+  };
+
+  const handleResetFolderCover = async (folder: Folder) => {
+    try {
+      const updatedFolder: Folder = { ...folder, avatarBlob: undefined };
+      await saveFolder(updatedFolder);
+      setFolders((prev) => prev.map((f) => (f.id === folder.id ? updatedFolder : f)));
+      setCoverPickerFolder(null);
+      setSelectionMode(false);
+      setSelectedIds(new Set());
+      loadData();
+    } catch (err) {
+      console.error("Failed to reset folder cover:", err);
+    }
+  };
   const [currentFolderName, setCurrentFolderName] = useState<string | null>(
     null,
   );
@@ -561,7 +636,8 @@ export function CharacterList({
   const sortRef = useRef<HTMLDivElement>(null);
 
   // 如果进入了子文件夹，按返回键（网页后退/安卓返回键/侧滑手势）时返回上一级目录
-  useBackHandler(!!folderId, () => {
+  // 核心安全保障：如果角色卡详情正处于打开状态，必须由详情自身处理返回，严禁穿透触发退出文件夹！
+  useBackHandler(!!folderId && !isDetailOpen, () => {
     handleBack();
     return true;
   });
@@ -778,15 +854,9 @@ export function CharacterList({
   };
 
   const sensors = useSensors(
-    useSensor(MouseSensor, {
+    useSensor(PointerSensor, {
       activationConstraint: {
-        distance: 10,
-      },
-    }),
-    useSensor(TouchSensor, {
-      activationConstraint: {
-        delay: 250,
-        tolerance: 5,
+        distance: 5,
       },
     }),
     useSensor(KeyboardSensor, {
@@ -802,9 +872,17 @@ export function CharacterList({
     return false;
   };
 
+  const characterMap = useMemo(() => {
+    const map = new Map<string, CharacterCard>();
+    for (const c of characters) {
+      map.set(c.id, c);
+    }
+    return map;
+  }, [characters]);
+
   const activeChar =
     activeDragId && activeDragId.startsWith("char-")
-      ? characters.find((c) => c.id === activeDragId.replace("char-", ""))
+      ? characterMap.get(activeDragId.replace("char-", "")) || null
       : null;
   const activeIsQR = activeChar ? checkIsQR(activeChar) : false;
 
@@ -840,6 +918,40 @@ export function CharacterList({
     } else {
       const activeId = activeIdStr.replace("char-", "");
       const overId = overIdStr.replace("char-", "");
+
+      // 拖拽角色卡到文件夹上：直接移动到该文件夹
+      if (overIdStr.startsWith("folder-")) {
+        const targetFolderId = overIdStr.replace("folder-", "");
+        const targetFolder = folders.find((f) => f.id === targetFolderId);
+        if (targetFolder) {
+          const idsToMove =
+            selectedIds.has(activeId) && selectedIds.size > 1
+              ? Array.from(selectedIds).filter(
+                  (id) => !folders.some((f) => f.id === id),
+                )
+              : [activeId];
+
+          const movedCharIds = new Set(idsToMove);
+          setCharacters((prev) => prev.filter((c) => !movedCharIds.has(c.id)));
+          setTotalCharacters((prev) => Math.max(0, prev - movedCharIds.size));
+          setTotalItems((prev) => Math.max(0, prev - movedCharIds.size));
+          if (selectedIds.has(activeId)) {
+            setSelectedIds(new Set());
+            setSelectionMode(false);
+          }
+
+          for (const cId of idsToMove) {
+            const char = await getCharacter(cId);
+            if (char) {
+              char.folderId = targetFolderId;
+              await saveCharacter(char);
+            }
+          }
+          invalidateCache();
+          loadData();
+        }
+        return;
+      }
 
       const charA = characters.find((c) => c.id === activeId);
       const charB = characters.find((c) => c.id === overId);
@@ -882,36 +994,144 @@ export function CharacterList({
     const reqId = ++loadDataReqIdRef.current;
     try {
       const allFoldersData = await getFolders();
+      // 构建文件夹映射与完整路径生成
+      const folderMap = new Map<string, Folder>();
+      allFoldersData.forEach((f) => folderMap.set(f.id, f));
+
+      const getFolderPath = (fId: string): string => {
+        const parts: string[] = [];
+        let curr: Folder | undefined = folderMap.get(fId);
+        const visited = new Set<string>();
+        while (curr && !visited.has(curr.id)) {
+          visited.add(curr.id);
+          parts.unshift(curr.name);
+          curr = curr.parentId ? folderMap.get(curr.parentId) : undefined;
+        }
+        return parts.join(" / ");
+      };
+
+      const pathMap: Record<string, string> = {};
+      const ancestorMap: Record<string, Array<{ id: string; name: string }>> = {};
+      const getFolderAncestors = (fId: string): Array<{ id: string; name: string }> => {
+        const list: Array<{ id: string; name: string }> = [];
+        let curr: Folder | undefined = folderMap.get(fId);
+        const visited = new Set<string>();
+        while (curr && !visited.has(curr.id)) {
+          visited.add(curr.id);
+          list.unshift({ id: curr.id, name: curr.name });
+          curr = curr.parentId ? folderMap.get(curr.parentId) : undefined;
+        }
+        return list;
+      };
+
+      for (const f of allFoldersData) {
+        pathMap[f.id] = getFolderPath(f.id);
+        ancestorMap[f.id] = getFolderAncestors(f.id);
+      }
+      setFolderPaths(pathMap);
+      setFolderAncestors(ancestorMap);
+
+      // 计算每个文件夹的子文件夹数和卡片数
+      const subfolderCountMap: Record<string, number> = {};
+      for (const f of allFoldersData) {
+        if (f.parentId) {
+          subfolderCountMap[f.parentId] = (subfolderCountMap[f.parentId] || 0) + 1;
+        }
+      }
+      const countsMap: Record<string, { chars: number; subfolders: number }> = {};
+      for (const f of allFoldersData) {
+        countsMap[f.id] = {
+          chars: 0,
+          subfolders: subfolderCountMap[f.id] || 0,
+        };
+      }
+      try {
+        const { getFolderItemCounts } = await import("../lib/db");
+        const charCounts = await getFolderItemCounts(allFoldersData.map((f) => f.id));
+        for (const f of allFoldersData) {
+          countsMap[f.id].chars = charCounts[f.id] || 0;
+        }
+      } catch (err) {
+        console.error("Failed to load folder item counts", err);
+      }
+      if (reqId !== loadDataReqIdRef.current) return;
+      setFolderCounts(countsMap);
+
       let currentFolders: Folder[] = [];
+      const hasSearch = !!debouncedSearchQuery.trim();
+      const q = debouncedSearchQuery.trim().toLowerCase();
+
       if (folderId === null) {
-        currentFolders = allFoldersData.filter((f) => !f.parentId);
+        if (hasSearch) {
+          // 在根目录搜索时：全局跨文件夹搜索所有匹配的文件夹（匹配名称或完整路径）
+          currentFolders = allFoldersData.filter((f) => {
+            const p = pathMap[f.id]?.toLowerCase() || "";
+            return f.name.toLowerCase().includes(q) || p.includes(q);
+          });
+        } else {
+          currentFolders = allFoldersData.filter((f) => !f.parentId);
+        }
         setCurrentFolderName(null);
       } else {
-        currentFolders = allFoldersData.filter((f) => f.parentId === folderId);
         const currentFolder = allFoldersData.find((f) => f.id === folderId);
         if (currentFolder) setCurrentFolderName(currentFolder.name);
+
+        if (hasSearch) {
+          // 在子文件夹中搜索时：递归搜索当前文件夹下所有层级的子孙文件夹
+          const descendantIds = new Set<string>();
+          const collectDescendants = (pid: string) => {
+            for (const f of allFoldersData) {
+              if (f.parentId === pid) {
+                descendantIds.add(f.id);
+                collectDescendants(f.id);
+              }
+            }
+          };
+          collectDescendants(folderId);
+
+          currentFolders = allFoldersData.filter((f) =>
+            descendantIds.has(f.id) && (
+              f.name.toLowerCase().includes(q) ||
+              (pathMap[f.id]?.toLowerCase() || "").includes(q)
+            )
+          );
+        } else {
+          currentFolders = allFoldersData.filter((f) => f.parentId === folderId);
+        }
       }
 
+      // 彻底修复：文件夹必须全面适配所有排序模式（新旧、名称、最近修改、自定义等）！
       currentFolders.sort((a, b) => {
-        if (sortBy === "custom") {
-          if (a.sortOrder !== undefined && b.sortOrder !== undefined)
-            return a.sortOrder - b.sortOrder;
-          if (a.sortOrder !== undefined) return -1;
-          if (b.sortOrder !== undefined) return 1;
+        switch (sortBy) {
+          case "custom":
+            if (a.sortOrder !== undefined && b.sortOrder !== undefined)
+              return a.sortOrder - b.sortOrder;
+            if (a.sortOrder !== undefined) return -1;
+            if (b.sortOrder !== undefined) return 1;
+            return b.createdAt - a.createdAt;
+          case "newest_import":
+            return b.createdAt - a.createdAt;
+          case "oldest_import":
+            return a.createdAt - b.createdAt;
+          case "recently_modified": {
+            const timeA = (a as any).updatedAt || a.createdAt;
+            const timeB = (b as any).updatedAt || b.createdAt;
+            return timeB - timeA;
+          }
+          case "a_z":
+            return a.name.localeCompare(b.name, "zh-CN");
+          case "z_a":
+            return b.name.localeCompare(a.name, "zh-CN");
+          default:
+            return b.createdAt - a.createdAt;
         }
-        return b.createdAt - a.createdAt;
       });
 
       if (reqId !== loadDataReqIdRef.current) return;
       setFolders(currentFolders);
 
       let currentVisibleFolders = currentFolders;
-      if (debouncedSearchQuery) {
-        const q = debouncedSearchQuery.toLowerCase();
-        currentVisibleFolders = currentFolders.filter((f) =>
-          f.name.toLowerCase().includes(q),
-        );
-      } else if (selectedTags.length > 0) {
+      if (selectedTags.length > 0) {
         currentVisibleFolders = [];
       }
 
@@ -2144,21 +2364,70 @@ export function CharacterList({
           >
             <div className="flex-1 min-w-0 px-1">
               {folderId ? (
-                <div className="flex items-center gap-2 mb-1">
-                  <button
-                    onClick={handleBack}
-                    className="p-1 -ml-1 rounded-lg hover:bg-white/10 transition text-white/60 hover:text-white"
-                  >
-                    <ChevronLeft className="w-6 h-6" />
-                  </button>
-                  <h1 className="text-2xl font-bold text-white truncate">
-                    {folderId === "all" ? "全部角色" : currentFolderName}
-                  </h1>
+                <div className="flex flex-col gap-1 mb-1">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleBack}
+                      className="p-1 -ml-1 rounded-lg hover:bg-white/10 transition text-white/60 hover:text-white"
+                      title="返回上一层"
+                    >
+                      <ChevronLeft className="w-6 h-6" />
+                    </button>
+                    <h1 className="text-2xl font-bold text-white truncate">
+                      {folderId === "all" ? "全部角色" : currentFolderName}
+                    </h1>
+                  </div>
+
+                  {folderId !== "all" && folderAncestors[folderId] && folderAncestors[folderId].length > 0 && (
+                    <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 text-xs text-white/50">
+                      <button
+                        onClick={() => {
+                          if (searchQuery) {
+                            setSearchQuery("");
+                            setDebouncedSearchQuery("");
+                          }
+                          onSelectFolder?.(null);
+                        }}
+                        className="hover:text-purple-400 transition flex items-center gap-1 shrink-0"
+                      >
+                        <Home className="w-3.5 h-3.5" />
+                        <span>主页</span>
+                      </button>
+                      {folderAncestors[folderId].map((crumb, idx) => (
+                        <React.Fragment key={crumb.id || idx}>
+                          <ChevronRight className="w-3 h-3 text-white/30 shrink-0" />
+                          {idx === folderAncestors[folderId].length - 1 ? (
+                            <span className="font-semibold text-white/90 truncate max-w-[150px] sm:max-w-[220px]">
+                              {crumb.name}
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                if (searchQuery) {
+                                  setSearchQuery("");
+                                  setDebouncedSearchQuery("");
+                                }
+                                onSelectFolder?.(crumb.id);
+                              }}
+                              className="hover:text-purple-400 transition truncate max-w-[120px] shrink-0"
+                            >
+                              {crumb.name}
+                            </button>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : (
-                <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-600 truncate">
-                  SillyTavern管理器
-                </h1>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-600 truncate tracking-wide">
+                    MIU
+                  </h1>
+                  <span className="text-[10px] font-bold tracking-wider text-purple-300 bg-purple-500/15 border border-purple-500/30 px-2 py-0.5 rounded-full select-none shadow-sm">
+                    v3.0.4
+                  </span>
+                </div>
               )}
               <p className="text-slate-400 text-xs mt-0.5 truncate">
                 {folders.length > 0 && totalCharacters > 0
@@ -2559,35 +2828,26 @@ export function CharacterList({
                 >
                   {page === 1 && !searchQuery && selectedTags.length === 0 && (
                     <motion.div
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
+                      whileHover={{ scale: 1.03 }}
+                      whileTap={{ scale: 0.97 }}
                       onClick={() => setIsCreatingFolder(true)}
                       className={
                         viewMode === "list"
                           ? "flex items-center gap-4 p-3 bg-white/5 hover:bg-white/10 rounded-2xl cursor-pointer transition border border-dashed border-white/20"
-                          : viewMode === "masonry" 
-                            ? "flex flex-col items-center gap-2 cursor-pointer group break-inside-avoid mb-4" 
-                            : "flex flex-col items-center gap-2 cursor-pointer group break-inside-avoid"
+                          : "flex flex-col items-center cursor-pointer group break-inside-avoid w-full"
                       }
                     >
-                      <div
-                        className={
-                          viewMode === "list"
-                            ? "w-12 h-12 bg-white/5 border-2 border-dashed border-white/20 rounded-xl flex items-center justify-center shrink-0"
-                            : "w-full aspect-square bg-white/5 border-2 border-dashed border-white/20 rounded-3xl flex items-center justify-center group-hover:bg-white/10 group-hover:border-white/40 transition"
-                        }
-                      >
-                        <Plus className="w-8 h-8 text-white/40 group-hover:text-white/60 transition" />
-                      </div>
-                      <span
-                        className={
-                          viewMode === "list"
-                            ? "font-medium text-white/60"
-                            : "text-xs font-medium text-center truncate w-full text-white/60 group-hover:text-white/80"
-                        }
-                      >
-                        新建文件夹
-                      </span>
+                      <FrostedNewFolderCover viewMode={viewMode} />
+                      {viewMode !== "list" && (
+                        <div className="flex flex-col items-center w-full min-w-0 px-1 mt-1.5 text-center">
+                          <span className="text-xs font-semibold text-white/70 group-hover:text-white transition truncate w-full">
+                            新建文件夹
+                          </span>
+                          <span className="text-[10px] text-white/35 group-hover:text-white/50 transition truncate mt-0.5">
+                            点击创建
+                          </span>
+                        </div>
+                      )}
                     </motion.div>
                   )}
 
@@ -2599,10 +2859,11 @@ export function CharacterList({
                         id={`folder-${folder.id}`}
                         disabled={!!searchQuery || selectedTags.length > 0}
                         activeDragIsQR={activeIsQR}
+                        activeDragCharId={activeChar?.id || null}
                       >
                         <motion.div
-                          whileHover={{ scale: 1.05 }}
-                          whileTap={{ scale: 0.95 }}
+                          whileHover={{ scale: 1.03 }}
+                          whileTap={{ scale: 0.97 }}
                           onTouchStart={(e) => {
                             longPressRef.current.triggered = false;
                             longPressRef.current.startY = e.touches[0].clientY;
@@ -2664,22 +2925,26 @@ export function CharacterList({
                             if (selectionMode) {
                               toggleSelection(folder.id);
                             } else {
+                              if (searchQuery) {
+                                setSearchQuery("");
+                                setDebouncedSearchQuery("");
+                              }
                               onSelectFolder?.(folder.id);
                             }
                           }}
                           className={
                             viewMode === "list"
-                              ? "flex items-center gap-4 p-3 bg-white/5 hover:bg-white/10 rounded-2xl cursor-pointer transition relative group select-none"
-                              : "flex flex-col items-center gap-2 cursor-pointer group relative select-none break-inside-avoid"
+                              ? "flex items-center gap-4 p-3 bg-white/5 hover:bg-white/10 rounded-2xl cursor-pointer transition relative group select-none border border-transparent"
+                              : "flex flex-col items-center cursor-pointer group relative select-none break-inside-avoid w-full"
                           }
                         >
                           {selectionMode && (
-                            <div className="absolute top-2 right-2 z-10">
+                            <div className="absolute top-2 right-2 z-20">
                               <div
                                 className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${
                                   selectedIds.has(folder.id)
                                     ? "bg-purple-500 border-purple-500"
-                                    : "border-white/40 bg-black/20 backdrop-blur-md"
+                                    : "border-white/40 bg-black/40 backdrop-blur-md"
                                 }`}
                               >
                                 {selectedIds.has(folder.id) && (
@@ -2688,32 +2953,56 @@ export function CharacterList({
                               </div>
                             </div>
                           )}
-                          <div
-                            className={
-                              viewMode === "list"
-                                ? "w-12 h-12 bg-white/10 backdrop-blur-md rounded-xl flex items-center justify-center border border-white/20 shrink-0 overflow-hidden object-cover relative"
-                                : "w-full aspect-square bg-white/10 backdrop-blur-md rounded-3xl flex items-center justify-center border border-white/20 group-hover:bg-white/20 transition shadow-sm overflow-hidden relative"
-                            }
-                          >
-                            <FolderCover
-                              folder={folder}
-                              previews={previews}
-                              viewMode={viewMode}
-                            />
-                          </div>
-                          <span
-                            className={
-                              viewMode === "list"
-                                ? "font-medium text-white/90 flex-1"
-                                : "text-xs font-medium text-center truncate w-full text-white/80 group-hover:text-white"
-                            }
-                          >
-                            {folder.name}
-                          </span>
+                          
+                          <FrostedFolderCover
+                            folder={folder}
+                            previews={previews}
+                            viewMode={viewMode}
+                          />
+
+                          {viewMode === "list" ? (
+                            <div className="flex-1 min-w-0 flex flex-col justify-center">
+                              <div className="flex items-center gap-2">
+                                <span className="font-semibold text-white/90 truncate">{folder.name}</span>
+                                <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 font-normal shrink-0">
+                                  {folderCounts[folder.id]?.chars ?? 0} 照片{folderCounts[folder.id]?.subfolders ? ` · ${folderCounts[folder.id]?.subfolders} 文件夹` : ''}
+                                </span>
+                              </div>
+                              {debouncedSearchQuery && folderPaths[folder.id] && folderPaths[folder.id] !== folder.name && (
+                                <span className="text-xs text-purple-300/70 truncate mt-0.5">
+                                  路径: {folderPaths[folder.id]}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex flex-col items-center w-full min-w-0 px-1 mt-1.5 text-center">
+                              <span className="text-xs font-semibold text-white/90 group-hover:text-white transition truncate w-full">
+                                {folder.name}
+                              </span>
+                              <span className="text-[11px] text-white/45 group-hover:text-white/65 transition truncate mt-0.5">
+                                {folderCounts[folder.id]?.chars ?? 0} 照片{folderCounts[folder.id]?.subfolders ? ` · ${folderCounts[folder.id]?.subfolders} 文件夹` : ''}
+                              </span>
+                              {debouncedSearchQuery && folderPaths[folder.id] && folderPaths[folder.id] !== folder.name && (
+                                <span className="text-[10px] text-purple-300/70 truncate w-full text-center px-1 mt-0.5">
+                                  {folderPaths[folder.id]}
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </motion.div>
                       </SortableItemWrapper>
                     );
                   })}
+                </div>
+              )}
+
+              {paginatedFolders.length === 0 && characters.length === 0 && (searchQuery || selectedTags.length > 0) && (
+                <div className="flex flex-col items-center justify-center py-20 text-white/40">
+                  <Search className="w-12 h-12 mb-3 text-white/20 stroke-1" />
+                  <p className="text-base font-medium">未找到匹配的角色卡或文件夹</p>
+                  <p className="text-xs mt-1 text-white/30">
+                    已搜索全部目录，尝试更换关键词或清除筛选标签
+                  </p>
                 </div>
               )}
 
@@ -3007,7 +3296,17 @@ export function CharacterList({
                     <>
                       <div className="w-px h-8 bg-white/10 shrink-0" />
                       <button
-                        onClick={() => coverInputRef.current?.click()}
+                        onClick={() => {
+                          if (selectedIds.size === 1) {
+                            const selectedFolderId = Array.from(selectedIds)[0];
+                            const targetFolder = folders.find((f) => f.id === selectedFolderId);
+                            if (targetFolder) {
+                              setCoverPickerFolder(targetFolder);
+                              return;
+                            }
+                          }
+                          coverInputRef.current?.click();
+                        }}
                         disabled={selectedIds.size === 0}
                         className="flex flex-col items-center gap-1 px-4 py-2 rounded-full hover:bg-white/10 text-white/70 hover:text-orange-400 transition disabled:opacity-50 group shrink-0"
                       >
@@ -3160,24 +3459,30 @@ export function CharacterList({
       </AnimatePresence>
 
       {imageToCrop && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-xl flex flex-col shadow-2xl overflow-hidden h-[70vh] max-h-[800px]">
-            <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
-              <h3 className="text-lg font-bold text-white">调整封面图片</h3>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-md pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg flex flex-col shadow-2xl overflow-hidden max-h-[92vh] sm:max-h-[85vh]">
+            <div className="p-3.5 sm:p-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
+              <div className="flex items-center gap-2">
+                <h3 className="text-base sm:text-lg font-bold text-white">调整封面图片</h3>
+                <span className="text-[10px] text-purple-300 bg-purple-500/15 border border-purple-400/25 px-2 py-0.5 rounded-md font-medium">
+                  2:3 标准竖卡
+                </span>
+              </div>
 
               <button
                 onClick={closeCrop}
-                className="p-1 rounded-full hover:bg-white/10 text-white/50 hover:text-white transition hidden sm:block"
+                className="p-1.5 rounded-full hover:bg-white/10 text-white/50 hover:text-white transition"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="flex-1 relative w-full h-full bg-black/50">
+
+            <div className="flex-1 min-h-[260px] relative w-full bg-black/60">
               <Cropper
                 image={imageToCrop}
                 crop={crop}
                 zoom={zoom}
-                aspect={1}
+                aspect={2 / 3}
                 cropShape="rect"
                 showGrid={true}
                 onCropChange={setCrop}
@@ -3185,36 +3490,62 @@ export function CharacterList({
                 onZoomChange={setZoom}
               />
             </div>
-            <div className="p-4 border-t border-white/10 bg-white/[0.02] flex items-center justify-between gap-4">
-              <input
-                type="range"
-                value={zoom}
-                min={1}
-                max={3}
-                step={0.1}
-                aria-labelledby="Zoom"
-                onChange={(e) => setZoom(Number(e.target.value))}
-                className="flex-1 h-2 bg-white/10 rounded-lg appearance-none cursor-pointer"
-              />
 
-              <div className="flex items-center gap-2">
+            <div className="p-3.5 sm:p-4 border-t border-white/10 bg-white/[0.02] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-white/50 font-medium shrink-0">缩放</span>
+                <input
+                  type="range"
+                  value={zoom}
+                  min={1}
+                  max={3}
+                  step={0.05}
+                  aria-labelledby="Zoom"
+                  onChange={(e) => setZoom(Number(e.target.value))}
+                  className="flex-1 h-2 bg-white/10 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 justify-end">
                 <button
                   onClick={closeCrop}
-                  className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white/80 font-medium rounded-xl transition sm:hidden"
+                  className="flex-1 sm:flex-none px-4 py-2 bg-white/5 hover:bg-white/10 text-white/80 font-medium rounded-xl text-xs sm:text-sm transition"
                 >
                   取消
                 </button>
                 <button
                   onClick={handleSaveCrop}
-                  className="px-6 py-2 bg-purple-500 hover:bg-purple-600 text-white font-bold rounded-xl transition"
+                  disabled={isCropping}
+                  className="flex-1 sm:flex-none px-6 py-2 bg-purple-500 hover:bg-purple-600 disabled:opacity-50 text-white font-bold rounded-xl text-xs sm:text-sm transition flex items-center justify-center gap-1.5 shadow-lg shadow-purple-500/25"
                 >
-                  保存封面
+                  {isCropping && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>保存封面</span>
                 </button>
               </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* Folder Cover Picker Modal */}
+      <FolderCoverPickerModal
+        isOpen={!!coverPickerFolder}
+        folder={coverPickerFolder}
+        onClose={() => setCoverPickerFolder(null)}
+        onSelectCharacterCover={(char) => {
+          if (coverPickerFolder) {
+            handleSetCharacterAsFolderCover(coverPickerFolder, char);
+          }
+        }}
+        onUploadCustomImage={() => {
+          coverInputRef.current?.click();
+        }}
+        onResetCover={() => {
+          if (coverPickerFolder) {
+            handleResetFolderCover(coverPickerFolder);
+          }
+        }}
+      />
     </div>
   );
 }
@@ -3353,6 +3684,7 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
 
   const charTags = (char as any).tags || char.data?.data?.tags || char.data?.tags;
   const hasTags = charTags && Array.isArray(charTags) && charTags.length > 0;
+  const badgeInfo = getCardBadgeInfo(char);
 
   if (viewMode === "list") {
     return (
@@ -3394,6 +3726,12 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="font-medium text-white/90 truncate">{char.name}</h3>
+            {badgeInfo && (
+              <span className="text-[10px] bg-black/60 backdrop-blur-md border border-white/10 text-white/90 px-1.5 py-0.5 rounded-md flex-shrink-0 flex items-center gap-1 font-medium select-none">
+                <span className={`w-1.5 h-1.5 rounded-full ${badgeInfo.dotColor} shrink-0`} />
+                <span>{badgeInfo.label}</span>
+              </span>
+            )}
             {hasTags && (
               <div className="flex gap-1 overflow-hidden shrink-0">
                 {charTags.slice(0, 3).map((t: string) => (
@@ -3455,14 +3793,16 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
       onMouseDown={handleTouchStart}
       onMouseUp={handleTouchEnd}
       onMouseLeave={handleTouchEnd}
-      className={`relative ${viewMode === "masonry" ? "w-full h-auto min-h-[150px] bg-white/5" : "aspect-[2/3]"} rounded-2xl overflow-hidden cursor-pointer shadow-lg border transition-all duration-300 group select-none ${isSelected ? "border-purple-500 ring-2 ring-purple-500" : "border-white/10"}`}
+      className={`relative ${viewMode === "masonry" ? "w-full min-h-[160px] aspect-[2/3] bg-white/5" : "aspect-[2/3]"} rounded-2xl overflow-hidden cursor-pointer shadow-lg border transition-all duration-300 group select-none ${isSelected ? "border-purple-500 ring-2 ring-purple-500" : "border-white/10"}`}
     >
       <motion.img
         animate={{ scale: isSelected ? 0.9 : 1 }}
         transition={{ duration: 0.2 }}
         src={url || undefined}
         alt={char.name}
-        className={`w-full ${viewMode === "masonry" ? "h-auto block" : "h-full"} object-cover pointer-events-none`}
+        loading="lazy"
+        decoding="async"
+        className="w-full h-full object-cover pointer-events-none"
         onError={() => {
           if (url === defaultFallback) return;
           if (fallbackObjectUrlRef.current) {
@@ -3494,14 +3834,14 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
             ))}
           </div>
         )}
-        {/* <div className="flex items-center gap-1 mt-1.5">
-          {char.autoImportFilename && (
-            <span className="text-[9px] text-[#ffffff]/60 truncate shrink">
-              {char.autoImportFilename}
-            </span>
-          )}
-        </div> */}
       </div>
+
+      {badgeInfo && (
+        <div className="absolute top-2 left-2 z-10 px-2 py-0.5 bg-black/60 backdrop-blur-md rounded-md text-[10px] font-medium text-white/90 border border-white/10 flex items-center gap-1.5 shadow-sm pointer-events-none select-none">
+          <span className={`w-1.5 h-1.5 rounded-full ${badgeInfo.dotColor} shrink-0`} />
+          <span>{badgeInfo.label}</span>
+        </div>
+      )}
 
       <AnimatePresence>
         {selectionMode && (
@@ -3523,5 +3863,22 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
       </AnimatePresence>
     </motion.div>
   );
+},
+(prevProps, nextProps) => {
+  if (prevProps.viewMode !== nextProps.viewMode) return false;
+  if (prevProps.selectionMode !== nextProps.selectionMode) return false;
+  if (prevProps.isSelected !== nextProps.isSelected) return false;
+
+  const p = prevProps.char;
+  const n = nextProps.char;
+  if (p.id !== n.id) return false;
+  if (p.updatedAt !== n.updatedAt) return false;
+  if (p.name !== n.name) return false;
+  if (p.folderId !== n.folderId) return false;
+  if (p.deletedAt !== n.deletedAt) return false;
+  if (p.avatarBlob !== n.avatarBlob) return false;
+  if (p.localFilePath !== n.localFilePath) return false;
+
+  return true;
 }
 );
