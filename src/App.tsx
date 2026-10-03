@@ -17,8 +17,9 @@ import { SettingsModal } from './components/SettingsModal';
 import { ChatViewer } from './components/ChatViewer';
 import { SyncWidget } from './components/SyncWidget';
 import { UpdateModal } from './components/UpdateModal';
+import { CharacterSummaryModal } from './components/CharacterSummaryModal';
 import { checkForAppUpdates, VersionInfo } from './config/version';
-import { migrateDatabase, getFolders } from './lib/db';
+import { migrateDatabase, getFolders, getCharacter, CharacterCard } from './lib/db';
 import { useTaggerState } from './lib/taggerState';
 import { isAndroid } from './lib/appBridge';
 import { handleBackRequest } from './lib/useBackHandler';
@@ -47,15 +48,23 @@ function TaggerWidget({ onClick }: { onClick: () => void }) {
       <AnimatePresence>
         {errorToast && (
           <motion.div
-            initial={{ opacity: 0, y: -50, x: '-50%' }}
+            initial={{ opacity: 0, y: -20, x: '-50%' }}
             animate={{ opacity: 1, y: 0, x: '-50%' }}
-            exit={{ opacity: 0, y: -50, x: '-50%' }}
-            className="fixed top-6 left-1/2 z-[100] bg-red-500 text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3"
+            exit={{ opacity: 0, y: -20, x: '-50%' }}
+            className="fixed top-5 left-1/2 z-[100] ios-toast ios-toast-error px-4 py-2.5 rounded-full flex items-center gap-2.5 max-w-[92vw] sm:max-w-md w-auto pointer-events-auto miu-skin"
+            role="alert"
+            aria-live="assertive"
           >
-            <AlertCircle className="w-5 h-5" />
-            <span className="font-medium">{errorToast}</span>
-            <button onClick={() => setErrorToast(null)} className="p-1 hover:bg-white/20 rounded-full transition">
-              <X className="w-4 h-4" />
+            <AlertCircle className="w-4 h-4 text-red-400 ios-toast-icon-error shrink-0" />
+            <span className="font-medium text-xs sm:text-sm truncate flex-1">
+              {errorToast}
+            </span>
+            <button 
+              onClick={() => setErrorToast(null)} 
+              className="p-1 hover:bg-white/10 text-slate-400 hover:text-white ios-toast-close rounded-full transition shrink-0 cursor-pointer ml-1"
+              title="关闭"
+            >
+              <X className="w-3.5 h-3.5" />
             </button>
           </motion.div>
         )}
@@ -64,45 +73,46 @@ function TaggerWidget({ onClick }: { onClick: () => void }) {
       <AnimatePresence>
         {shouldShow && (
           <motion.div
-            initial={{ opacity: 0, y: -50, x: '-50%' }}
+            initial={{ opacity: 0, y: -20, x: '-50%' }}
             animate={{ opacity: 1, y: 0, x: '-50%' }}
-            exit={{ opacity: 0, y: -50, x: '-50%' }}
+            exit={{ opacity: 0, y: -20, x: '-50%' }}
             onClick={onClick}
-            className="fixed top-12 sm:top-20 left-1/2 z-50 bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-2xl rounded-2xl p-3 sm:p-4 cursor-pointer hover:bg-slate-700/90 transition-colors w-[90%] max-w-[16rem] sm:w-72"
+            className={`tagger-floating-pill fixed ${errorToast ? 'top-16' : 'top-5'} left-1/2 z-50 rounded-full px-4 py-2 sm:px-4.5 sm:py-2 flex items-center gap-2.5 max-w-[92vw] w-auto cursor-pointer hover:scale-[1.02] active:scale-[0.98] transition-all overflow-hidden group select-none`}
+            title="点击打开打标面板"
           >
-            <div className="flex items-center gap-3 mb-2">
-              {isPaused ? (
-                <Pause className="w-5 h-5 text-yellow-400" />
-              ) : hasError ? (
-                <AlertCircle className="w-5 h-5 text-red-400" />
-              ) : (
-                <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
-              )}
-              <div className="flex-1">
-                <h4 className="text-sm font-semibold text-white">
-                  {isPaused ? '自动打标已暂停' : hasError ? '自动打标遇到错误' : '正在后台打标...'}
-                </h4>
-                <p className="text-xs text-white/50">
-                  进度: {progress.current} / {progress.total} (成功: {progress.success})
-                </p>
-              </div>
-              <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  import('./lib/taggerState').then(({ taggerState }) => taggerState.dismiss());
-                }}
-                className="p-1 hover:bg-white/20 rounded-full transition text-white/60 hover:text-white shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="w-full bg-black/40 rounded-full h-1.5 overflow-hidden relative">
+            {isPaused ? (
+              <Pause className="w-4 h-4 text-yellow-400 shrink-0 [.light-theme_&]:!text-amber-500" />
+            ) : hasError ? (
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0 [.light-theme_&]:!text-red-500" />
+            ) : (
+              <Loader2 className="w-4 h-4 text-blue-400 animate-spin shrink-0 [.light-theme_&]:!text-blue-600" />
+            )}
+            
+            <span className="text-xs sm:text-sm font-medium text-slate-100 whitespace-nowrap tagger-floating-text [.light-theme_&]:!text-[#0f172a]">
+              {isPaused ? '打标已暂停' : hasError ? '打标遇到错误' : '自动打标中'}
+            </span>
+
+            <span className="text-[11px] font-semibold text-blue-300 bg-blue-500/20 px-2.5 py-0.5 rounded-full shrink-0 [.light-theme_&]:!text-blue-600 [.light-theme_&]:!bg-blue-50 border-0 border-none outline-none">
+              {progress.current}/{progress.total}
+            </span>
+
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                import('./lib/taggerState').then(({ taggerState }) => taggerState.dismiss());
+              }}
+              className="p-1 hover:bg-white/20 rounded-full transition text-white/50 hover:text-white shrink-0 ml-0.5 tagger-floating-close [.light-theme_&]:!text-slate-400 [.light-theme_&]:hover:!text-slate-800 [.light-theme_&]:hover:!bg-black/5 cursor-pointer"
+              title="隐藏悬浮窗"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+
+            {/* 微型内置进度条 */}
+            <div className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-transparent overflow-hidden pointer-events-none">
               <div 
-                className={`h-full transition-all duration-500 relative ${isPaused ? 'bg-yellow-500' : hasError ? 'bg-red-500' : 'bg-gradient-to-r from-purple-500 to-blue-500'}`}
+                className={`h-full transition-all duration-300 ${isPaused ? 'bg-amber-500' : hasError ? 'bg-red-500' : 'bg-gradient-to-r from-[#a855f7] via-[#ec4899] to-[#a855f7] [.light-theme_&]:!from-blue-500 [.light-theme_&]:!to-indigo-500'}`}
                 style={{ width: `${(progress.current / Math.max(1, progress.total)) * 100}%` }}
-              >
-                <div className="absolute inset-0 bg-white/20 animate-pulse" />
-              </div>
+              />
             </div>
           </motion.div>
         )}
@@ -159,6 +169,35 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
+  const [summaryModalChar, setSummaryModalChar] = useState<CharacterCard | null>(null);
+
+  const handleSelectChar = useCallback(async (id: string | null, skipSummaryModal = false) => {
+    if (!id) {
+      setSelectedCharId(null);
+      setSummaryModalChar(null);
+      return;
+    }
+    if (skipSummaryModal) {
+      setSelectedCharId(id);
+      setSummaryModalChar(null);
+      return;
+    }
+    try {
+      const char = await getCharacter(id);
+      if (char) {
+        const charData = char.data?.data || char.data || {};
+        const summary = char.aiSummary || charData.aiSummary;
+        if (summary && summary.trim().length > 0) {
+          setSummaryModalChar(char);
+          return;
+        }
+      }
+    } catch (e) {
+      console.error('Error checking character summary:', e);
+    }
+    setSelectedCharId(id);
+    setSummaryModalChar(null);
+  }, []);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importModalInitialFiles, setImportModalInitialFiles] = useState<FileList | File[] | null>(null);
   const handleOpenImportModal = useCallback((files?: FileList | File[]) => {
@@ -186,13 +225,35 @@ export default function App() {
     return () => window.removeEventListener('charactersUpdated', handleCharactersUpdated);
   }, []);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'api' | 'st' | 'cloud' | 'wallpaper' | 'about'>('api');
   const [refreshKey, setRefreshKey] = useState(0);
+  const [isLightMode, setIsLightMode] = useState(() => document.documentElement.classList.contains('light-theme'));
+
+  useEffect(() => {
+    const checkTheme = () => {
+      const isLight = document.documentElement.classList.contains('light-theme') || localStorage.getItem('tavern_theme') === 'light';
+      setIsLightMode(isLight);
+      if (isLight) {
+        document.body.classList.add('light-theme');
+        document.body.style.backgroundColor = '#eef4fe';
+        document.documentElement.style.backgroundColor = '#eef4fe';
+      } else {
+        document.body.classList.remove('light-theme');
+        document.body.style.backgroundColor = '#0a0a0c';
+        document.documentElement.style.backgroundColor = '#0a0a0c';
+      }
+    };
+    checkTheme();
+    const observer = new MutationObserver(checkTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
   const [globalChatViewerId, setGlobalChatViewerId] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<VersionInfo | null>(null);
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
 
   useEffect(() => {
-    // 启动 3 秒后静默检测远端版本更新（仅在安卓移动端运行）
+    // 启动 3 秒后静默检测远端版本更新（网页版没有本地应用，跳过；仅本地应用才需要）
     if (!isAndroid()) return;
     const timer = setTimeout(async () => {
       const ignoredVer = localStorage.getItem('miu_ignored_version');
@@ -261,7 +322,7 @@ export default function App() {
         closedSomething = true;
         if (state.selectedFolderId === 'chatviewer' && chatViewerHasInnerRef.current) {
           setChatViewerBackSignal((v) => v + 1);
-        } else if (['trash', 'duplicates', 'autotagger', 'recommender', 'chatviewer'].includes(state.selectedFolderId)) {
+        } else if (['trash', 'duplicates', 'autotagger', 'recommender', 'chatviewer', 'favorites'].includes(state.selectedFolderId)) {
           setSelectedFolderId(null);
         } else {
           getFolders().then(allFolders => {
@@ -343,7 +404,7 @@ export default function App() {
               closedSomething = true;
               if (state.selectedFolderId === 'chatviewer' && chatViewerHasInnerRef.current) {
                 setChatViewerBackSignal((v) => v + 1);
-              } else if (['trash', 'duplicates', 'autotagger', 'recommender', 'chatviewer'].includes(state.selectedFolderId)) {
+              } else if (['trash', 'duplicates', 'autotagger', 'recommender', 'chatviewer', 'favorites'].includes(state.selectedFolderId)) {
                 setSelectedFolderId(null);
               } else {
                 getFolders().then(allFolders => {
@@ -373,17 +434,17 @@ export default function App() {
   if (isMigrating && migrationProgress.total > 0) {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-6">
-        <div className="w-16 h-16 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-6" />
+        <div className="w-16 h-16 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mb-6" />
         <h2 className="text-2xl font-bold mb-2">正在优化数据库...</h2>
         <p className="text-slate-400 mb-6 text-center max-w-md">
           检测到您有大量角色卡，系统正在进行底层存储优化以提升加载速度。这可能需要几分钟时间，请勿关闭页面。
         </p>
-        <p className="font-mono text-purple-400 font-bold text-lg mb-2">
+        <p className="font-mono text-blue-400 font-bold text-lg mb-2">
           {migrationProgress.current} / {migrationProgress.total}
         </p>
         <div className="w-full max-w-md bg-white/10 rounded-full h-3 overflow-hidden">
           <div 
-            className="bg-gradient-to-r from-purple-500 to-pink-500 h-full transition-all duration-300"
+            className="bg-gradient-to-r from-blue-500 to-pink-500 h-full transition-all duration-300"
             style={{ width: `${(migrationProgress.current / migrationProgress.total) * 100}%` }}
           />
         </div>
@@ -392,7 +453,9 @@ export default function App() {
   }
 
   return (
-    <div className="font-sans antialiased text-white bg-slate-900 fixed inset-0 flex overflow-hidden">
+    <div className={`font-sans antialiased fixed inset-0 flex overflow-hidden transition-colors duration-200 ${
+      isLightMode ? 'light-theme bg-[#eef4fe] text-[#1c1c1e]' : 'bg-[#0a0a0c] text-white'
+    }`}>
       
       {/* Sidebar Drawer */}
       <AnimatePresence>
@@ -403,7 +466,9 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setIsSidebarOpen(false)}
-              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+              className={`fixed inset-0 backdrop-blur-sm z-40 transition-colors ${
+                isLightMode ? 'bg-black/25' : 'bg-black/60'
+              }`}
             />
             
             <FolderSidebar 
@@ -413,7 +478,10 @@ export default function App() {
                 setSelectedCharId(null);
               }}
               onClose={() => setIsSidebarOpen(false)}
-              onOpenSettings={() => setIsSettingsOpen(true)}
+              onOpenSettings={(tab) => {
+                setSettingsInitialTab(tab || 'api');
+                setIsSettingsOpen(true);
+              }}
               onFolderChanged={() => setRefreshKey(prev => prev + 1)}
             />
           </>
@@ -427,14 +495,14 @@ export default function App() {
         ) : selectedFolderId === 'duplicates' ? (
           <DuplicateDetector 
             onClose={() => { setSelectedFolderId(null); setRefreshKey(prev => prev + 1); }} 
-            onSelectChar={setSelectedCharId}
+            onSelectChar={handleSelectChar}
           />
         ) : selectedFolderId === 'autotagger' ? (
           <AutoTagger onClose={() => { setSelectedFolderId(null); setRefreshKey(prev => prev + 1); }} onOpenSettings={() => setIsSettingsOpen(true)} />
         ) : selectedFolderId === 'recommender' ? (
           <AIRecommender 
             onClose={() => { setSelectedFolderId(null); setRefreshKey(prev => prev + 1); }} 
-            onSelectChar={setSelectedCharId}
+            onSelectChar={handleSelectChar}
             onOpenSettings={() => setIsSettingsOpen(true)} 
           />
         ) : selectedFolderId === 'chatviewer' ? (
@@ -444,12 +512,13 @@ export default function App() {
             refreshKey={refreshKey}
             onActiveViewChange={(hasInner) => { chatViewerHasInnerRef.current = hasInner; }}
             backSignal={chatViewerBackSignal}
+            isLightMode={isLightMode}
           />
         ) : (
           <CharacterList
             key={selectedFolderId}
             folderId={selectedFolderId}
-            onSelect={setSelectedCharId}
+            onSelect={handleSelectChar}
             onImport={() => setIsImportModalOpen(true)}
             onSelectFolder={(id) => {
               setSelectedFolderId(id);
@@ -458,8 +527,25 @@ export default function App() {
             onOpenSidebar={() => setIsSidebarOpen(true)}
             refreshTrigger={refreshKey}
             isDetailOpen={!!selectedCharId}
+            isLightMode={isLightMode}
           />
         )}
+
+        <AnimatePresence>
+          {summaryModalChar && (
+            <CharacterSummaryModal
+              character={summaryModalChar}
+              onClose={() => setSummaryModalChar(null)}
+              onOpenDetail={(id) => handleSelectChar(id, true)}
+              onOpenChat={(id) => {
+                setSummaryModalChar(null);
+                setGlobalChatViewerId(id);
+              }}
+              onSummaryUpdated={() => setRefreshKey(prev => prev + 1)}
+              isLightMode={isLightMode}
+            />
+          )}
+        </AnimatePresence>
 
         <AnimatePresence>
           {selectedCharId && (
@@ -470,6 +556,7 @@ export default function App() {
               onOpenChat={setGlobalChatViewerId}
               onOpenImport={handleOpenImportModal}
               refreshKey={refreshKey}
+              isLightMode={isLightMode}
             />
           )}
         </AnimatePresence>
@@ -490,6 +577,7 @@ export default function App() {
               onClose={() => setGlobalChatViewerId(null)} 
               onOpenImport={handleOpenImportModal}
               refreshKey={refreshKey}
+              isLightMode={isLightMode}
             />
           </motion.div>
         )}
@@ -512,17 +600,18 @@ export default function App() {
 
       <SettingsModal
         isOpen={isSettingsOpen}
+        initialTab={settingsInitialTab}
+        isLightMode={isLightMode}
         onClose={() => { setIsSettingsOpen(false); setRefreshKey(prev => prev + 1); }}
       />
 
-      {isAndroid() && (
-        <UpdateModal
-          isOpen={isUpdateModalOpen}
-          versionInfo={updateInfo}
-          onClose={() => setIsUpdateModalOpen(false)}
-          onIgnoreVersion={(ver) => localStorage.setItem('miu_ignored_version', ver)}
-        />
-      )}
+      <UpdateModal
+        isOpen={isUpdateModalOpen}
+        versionInfo={updateInfo}
+        isLightMode={isLightMode}
+        onClose={() => setIsUpdateModalOpen(false)}
+        onIgnoreVersion={(ver) => localStorage.setItem('miu_ignored_version', ver)}
+      />
 
       <AnimatePresence>
         {selectedFolderId !== 'autotagger' && (
@@ -536,7 +625,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <SyncWidget />
+      <SyncWidget isLightMode={isLightMode} />
     </div>
   );
 }

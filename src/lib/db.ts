@@ -44,30 +44,59 @@ export function isActualCharacterCard(rawData: any): boolean {
       : outer;
 
   // 1. Explicit V2/V3 spec character card -> DEFINITELY a character card!
-  // Character cards may have embedded character_book, system_prompt, regex_scripts, etc.,
-  // but they are CHARACTER CARDS, not standalone tools.
   if (
     outer.spec === "chara_card_v2" ||
     outer.spec === "chara_card_v3" ||
+    outer.spec === "chara_card_v1" ||
     target.spec === "chara_card_v2" ||
-    target.spec === "chara_card_v3"
+    target.spec === "chara_card_v3" ||
+    target.spec === "chara_card_v1"
   ) {
     return true;
   }
 
-  // 2. Character-specific fields (first_mes, personality, mes_example) -> DEFINITELY a character card!
+  // 2. Character-specific core fields
   if (
     (typeof target.first_mes === 'string' && target.first_mes.trim().length > 0) ||
     (typeof target.personality === 'string' && target.personality.trim().length > 0) ||
     (typeof target.mes_example === 'string' && target.mes_example.trim().length > 0) ||
+    (Array.isArray(target.alternate_greetings) && target.alternate_greetings.length > 0) ||
     (typeof outer.first_mes === 'string' && outer.first_mes.trim().length > 0) ||
     (typeof outer.personality === 'string' && outer.personality.trim().length > 0) ||
-    (typeof outer.mes_example === 'string' && outer.mes_example.trim().length > 0)
+    (typeof outer.mes_example === 'string' && outer.mes_example.trim().length > 0) ||
+    (Array.isArray(outer.alternate_greetings) && outer.alternate_greetings.length > 0)
   ) {
     return true;
   }
 
-  // 3. Standalone tool signatures (when no character fields are present)
+  // 3. Character with character_name / char_name / name + any character content
+  const charName =
+    target.name ||
+    target.char_name ||
+    target.character_name ||
+    target.data?.name ||
+    target.data?.char_name ||
+    (typeof outer.name === 'string' ? outer.name : undefined) ||
+    (typeof outer.char_name === 'string' ? outer.char_name : undefined);
+
+  const hasCharacterContent =
+    (typeof target.description === 'string' && target.description.trim().length > 0) ||
+    (typeof target.scenario === 'string' && target.scenario.trim().length > 0) ||
+    (typeof target.creator_notes === 'string' && target.creator_notes.trim().length > 0) ||
+    (typeof target.system_prompt === 'string' && target.system_prompt.trim().length > 0) ||
+    (typeof target.char_persona === 'string' && target.char_persona.trim().length > 0) ||
+    (typeof target.char_greeting === 'string' && target.char_greeting.trim().length > 0) ||
+    (typeof outer.description === 'string' && outer.description.trim().length > 0) ||
+    (typeof outer.scenario === 'string' && outer.scenario.trim().length > 0) ||
+    (typeof outer.char_persona === 'string' && outer.char_persona.trim().length > 0) ||
+    (typeof outer.creator_notes === 'string' && outer.creator_notes.trim().length > 0) ||
+    (typeof outer.system_prompt === 'string' && outer.system_prompt.trim().length > 0);
+
+  if (charName && (hasCharacterContent || target.first_mes !== undefined || outer.first_mes !== undefined || target.alternate_greetings !== undefined || outer.alternate_greetings !== undefined)) {
+    return true;
+  }
+
+  // 4. Standalone tool signatures (when no character fields are present)
   // Check for Quick Reply (QR) signatures -> NOT a character card
   if (
     Array.isArray(outer.qrList) ||
@@ -142,25 +171,6 @@ export function isActualCharacterCard(rawData: any): boolean {
     target.script !== undefined
   ) {
     return false;
-  }
-
-  // 4. Character with character_name/char_name/name + description or scenario
-  const charName =
-    target.name ||
-    target.char_name ||
-    target.character_name ||
-    target.data?.name ||
-    (typeof outer.name === 'string' ? outer.name : undefined);
-
-  const hasCharacterContent =
-    (typeof target.description === 'string' && target.description.trim().length > 0) ||
-    (typeof target.scenario === 'string' && target.scenario.trim().length > 0) ||
-    (typeof target.creator_notes === 'string' && target.creator_notes.trim().length > 0) ||
-    (typeof outer.description === 'string' && outer.description.trim().length > 0) ||
-    (typeof outer.scenario === 'string' && outer.scenario.trim().length > 0);
-
-  if (charName && hasCharacterContent) {
-    return true;
   }
 
   return false;
@@ -427,6 +437,7 @@ export interface CharacterCard {
   avatarUrlFallback?: string;
   avatarHistory?: Blob[];
   versionHistory?: CardVersionSnapshot[];
+  activeVersionId?: string;
   data: any;
   originalFile?: File;
   createdAt: number;
@@ -434,9 +445,11 @@ export interface CharacterCard {
   fileModifiedAt?: number;
   deletedAt?: number;
   folderId?: string;
+  isFavorite?: boolean;
   hasBlobsSeparated?: boolean;
   sortOrder?: number;
   tags?: string[];
+  aiSummary?: string;
   isTool?: boolean;
   isQR?: boolean;
   category?: string;
@@ -448,6 +461,8 @@ export interface ChatLog {
   name: string;
   messages: any[];
   createdAt: number;
+  updatedAt?: number;
+  messageCount?: number;
   note?: string;
   firstAiName?: string;
   localFilePath?: string;
@@ -1101,6 +1116,7 @@ export interface CharMeta {
 
   deletedAt?: number;
   folderId?: string;
+  isFavorite?: boolean;
 
   avatarUrlFallback?: string;
   localFilePath?: string;
@@ -1119,6 +1135,13 @@ function buildCharMeta(val: any, foldersMap?: Map<string, string>): CharMeta {
   const isTool = cat !== "未归类";
   const isQR = cat === "快速回复";
   const fallbackAvatar = resolveAvatarUrl(val.avatarUrlFallback, val.name || val.id, cat);
+  const isFav = Boolean(
+    val.isFavorite ||
+    val.favorite ||
+    val.data?.data?.isFavorite ||
+    val.data?.isFavorite ||
+    val.data?.favorite
+  );
   return {
     id: val.id,
     createdAt: val.createdAt,
@@ -1129,6 +1152,7 @@ function buildCharMeta(val: any, foldersMap?: Map<string, string>): CharMeta {
     sortOrder: val.sortOrder,
     deletedAt: val.deletedAt,
     folderId: val.folderId,
+    isFavorite: isFav,
     tags: charTags,
     isTool,
     isQR,
@@ -1320,7 +1344,9 @@ export async function getFilteredCharacterCount(
     allMeta = allMeta.filter((c) => tags.every((t) => c.tags.includes(t)));
   }
 
-  if (folderId === null) {
+  if (folderId === "favorites") {
+    allMeta = allMeta.filter((c) => c.isFavorite);
+  } else if (folderId === null) {
     if (!searchQuery && tags.length === 0) {
       allMeta = allMeta.filter((c) => !c.folderId);
     }
@@ -1361,7 +1387,9 @@ export async function getCharacters(
     allMeta = allMeta.filter((c) => tags.every((t) => c.tags.includes(t)));
   }
 
-  if (folderId === null) {
+  if (folderId === "favorites") {
+    allMeta = allMeta.filter((c) => c.isFavorite);
+  } else if (folderId === null) {
     if (!searchQuery && tags.length === 0) {
       allMeta = allMeta.filter((c) => !c.folderId);
     }
@@ -1688,7 +1716,9 @@ export async function saveCharacters(
       if (JSON.stringify(existing.data) !== JSON.stringify(character.data)) {
         dataChanged = true;
       }
-      character.updatedAt = Date.now();
+      if (!(character as any)._skipTouchUpdatedAt) {
+        character.updatedAt = Date.now();
+      }
       needsOrphanLink =
         needsOrphanLink || existing.name !== character.name || dataChanged;
 
@@ -1798,6 +1828,7 @@ export async function saveCharacters(
     delete (charToSave as any)._oldFolderId;
     delete (charToSave as any)._wasDeleted;
     delete (charToSave as any)._previousFilePath;
+    delete (charToSave as any)._skipTouchUpdatedAt;
 
     await charStore2.put(charToSave);
     await charMetaStore2.put(buildCharMeta(charToSave));
@@ -2014,6 +2045,48 @@ export async function updateCharacterSortOrder(
       };
     }
   }
+}
+
+export async function toggleCharacterFavorite(id: string): Promise<boolean> {
+  const db = await initDB();
+  const tx = db.transaction(["characters", "char_meta"], "readwrite");
+  const charStore = tx.objectStore("characters");
+  const charMetaStore = tx.objectStore("char_meta");
+  
+  const char = await charStore.get(id);
+  if (!char) {
+    await tx.done;
+    return false;
+  }
+
+  const newFav = !char.isFavorite;
+  char.isFavorite = newFav;
+  char.updatedAt = Date.now();
+  if (char.data && typeof char.data === "object") {
+    char.data.isFavorite = newFav;
+  }
+  await charStore.put(char);
+
+  const meta = buildCharMeta(char);
+  await charMetaStore.put(meta);
+  await tx.done;
+
+  if (cachedMeta) {
+    const idx = cachedMeta.findIndex((m) => m.id === id);
+    if (idx >= 0) {
+      cachedMeta[idx] = {
+        ...cachedMeta[idx],
+        isFavorite: newFav,
+        updatedAt: char.updatedAt,
+      };
+    }
+  }
+  return newFav;
+}
+
+export async function getFavoriteCharacterCount(): Promise<number> {
+  const allMeta = await getCachedMeta();
+  return allMeta.filter((c) => !c.deletedAt && c.isFavorite).length;
 }
 
 export async function deleteCharactersBulk(

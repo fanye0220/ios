@@ -4,6 +4,9 @@
  * 以及 JSONL / TXT 对话记录的统一解析，供所有导入路径共用。
  */
 
+/**
+ * 判断对象是否是工具（脚本、预设、世界书、快速回复）或角色卡
+ */
 export function isToolOrCard(obj: any): boolean {
   if (!obj || typeof obj !== "object") return false;
   if (obj.type === "script" && obj.content !== undefined) return true;
@@ -16,20 +19,23 @@ export function isToolOrCard(obj: any): boolean {
 
 export function looksLikeChatHeader(obj: any): boolean {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
-  if ("chat_metadata" in obj) return true;
-  if (
-    ("user_name" in obj || "character_name" in obj || "create_date" in obj) &&
-    !("mes" in obj) &&
-    !("text" in obj)
-  ) {
-    return true;
-  }
-  return false;
+  return (
+    "user_name" in obj ||
+    "character_name" in obj ||
+    "chat_metadata" in obj ||
+    "create_date" in obj
+  );
 }
 
+/**
+ * 判断单个对象是否是一条真正的聊天消息。
+ * 渲染层(ChatViewer/CharacterChatsSection)与数据层只读取以下字段，
+ * 因此用它们来界定「消息」最稳妥：mes / is_user / swipes / send_date。
+ */
 export function looksLikeChatMessage(obj: any): boolean {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
-  if (looksLikeChatHeader(obj) || isToolOrCard(obj)) return false;
+  if (looksLikeChatHeader(obj)) return false;
+  if (isToolOrCard(obj)) return false;
   return (
     "mes" in obj ||
     "text" in obj ||
@@ -60,6 +66,14 @@ export function parseJsonlChat(text: string): any[] {
   return messages;
 }
 
+/**
+ * 清洗一组解析后的「消息」：
+ *  - 丢弃会话元数据头；
+ *  - 丢弃一切不是聊天消息的对象（世界书/预设/快速回复/角色卡等附属内容）；
+ *  - 返回是否「确实是一条聊天记录」(isChat)。
+ *
+ * 只有 isChat === true 且 messages.length > 0 时，调用方才应把它存成一条聊天记录。
+ */
 export function sanitizeChatMessages(raw: any): {
   messages: any[];
   isChat: boolean;
@@ -79,8 +93,13 @@ export function sanitizeChatMessages(raw: any): {
   return { messages, isChat: messages.length > 0 };
 }
 
+/**
+ * 判断「准备写入 characters 表的对象」是否其实是聊天内容（而非角色卡/资源）。
+ * 用于后台扫描时，避免把散落的聊天 .json 误建成主页上的角色卡。
+ */
 export function looksLikeChatPayload(parsed: any): boolean {
-  if (!parsed || isToolOrCard(parsed)) return false;
+  if (!parsed) return false;
+  if (isToolOrCard(parsed)) return false;
   if (Array.isArray(parsed)) {
     return parsed.some(looksLikeChatMessage);
   }
