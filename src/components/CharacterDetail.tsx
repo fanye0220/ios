@@ -1,8 +1,8 @@
 import { getFallbackAvatar, resolveAvatarUrl } from '../lib/avatar';
-import { useState, useEffect, useRef, memo } from 'react';
+import { useState, useEffect, useRef, memo, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, StickyNote, ChevronRight, Plus, Edit2, Power, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Check, Upload, Send, Loader2, Share2, Folder as FolderIcon, History, AlertCircle, Maximize2, BookOpen, Sparkles, FileJson, Image as ImageIcon, Save, Heart } from 'lucide-react';
+import { ArrowLeft, Download, Trash2, Book, MessageSquare, User, StickyNote, ChevronRight, Plus, Edit2, Power, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Check, Upload, Send, Loader2, Share2, Folder as FolderIcon, History, AlertCircle, Maximize2, BookOpen, Sparkles, FileJson, Image as ImageIcon, Save, Heart, RefreshCw, FileText, Eye, EyeOff } from 'lucide-react';
 import { getCharacter, deleteCharacter, saveCharacter, toggleCharacterFavorite, CharacterCard, getFolders, resolveFolderPath, getCachedMeta, getCharacterCategoryPrefix, isActualCharacterCard } from '../lib/db';
 import { getCardTypeBadgeInfo } from '../lib/cardType';
 import { parseTavernCard } from '../types/tavern';
@@ -17,6 +17,9 @@ import { CharacterChatsSection } from './CharacterChatsSection';
 import { CharacterMemosSection } from './CharacterMemosSection';
 import { CharacterVersionsSection } from './CharacterVersionsSection';
 import { MoveToFolderModal } from './MoveToFolderModal';
+import { CharacterSummaryModal } from './CharacterSummaryModal';
+import { TokenBreakdownModal } from './TokenBreakdownModal';
+import { getCharacterTokenBreakdown, formatTokenCount } from '../lib/tokens';
 import { FormattedCardContent } from './FormattedCardContent';
 import JSZip from 'jszip';
 import { isAndroid, saveToGallery, shareFileOnAndroid, exportFileToMIU, readLocalFileBuffer, downloadOrShareFile, getDownloadTooltip } from '../lib/appBridge';
@@ -95,6 +98,7 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
   const [avatarUrl, setAvatarUrl] = useState<string>('');
   const [resolvedModifiedDate, setResolvedModifiedDate] = useState<Date | null>(null);
   const [isMoveFolderOpen, setIsMoveFolderOpen] = useState(false);
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [currentFolderPath, setCurrentFolderPath] = useState<string>('');
   const savePromiseRef = useRef<Promise<void> | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -130,7 +134,14 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
     setTimeout(() => setStFeedback(null), 2500);
   };
 
+  const [showTokenBreakdownModal, setShowTokenBreakdownModal] = useState(false);
+  const tokenBreakdown = useMemo(() => {
+    return getCharacterTokenBreakdown(character);
+  }, [character]);
+
   const hasDetailOverlay = Boolean(
+    showTokenBreakdownModal ||
+    showSummaryModal ||
     showGreetingReader ||
     isMoveFolderOpen ||
     showDeleteConfirm ||
@@ -148,6 +159,7 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
   );
 
   const handleDetailBack = () => {
+    if (showSummaryModal) { setShowSummaryModal(false); return true; }
     if (showGreetingReader) { setShowGreetingReader(false); return true; }
     if (isMoveFolderOpen) { setIsMoveFolderOpen(false); return true; }
     if (isAddingAlternate) { setIsAddingAlternate(false); return true; }
@@ -309,6 +321,7 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
 
     const updatedChar = { 
       ...character, 
+      sourceUrl: sourceStr,
       data: updatedData 
     };
     const promise = saveCharacter(updatedChar);
@@ -406,6 +419,7 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
   const isQR = category === '快速回复';
   const isScript = category === '脚本' || category === '工具区';
   const isSpecialData = isTheme || isQR || isScript || isPreset;
+  const isToolCard = isSpecialData || isStandaloneWorldbook || !isActualCharacterCard(rawData) || Boolean(getCardTypeBadgeInfo(character));
 
   const getSafeFilename = (name: string) => {
     return name.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5\-]/g, '_') || 'character';
@@ -1013,20 +1027,50 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
             )}
           </div>
           
-          {/* Folder Capsule Badge - Unified with iOS/Glassmorphism UI */}
-          <div className="flex items-center justify-center gap-2 mt-2">
+          {/* 文件夹归类胶囊 (居中首排展示) */}
+          <div className="flex items-center justify-center mt-2 max-w-full px-2">
             <button
               onClick={() => setIsMoveFolderOpen(true)}
-              className="group inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 hover:bg-white/15 border border-white/15 hover:border-white/25 text-xs text-white/90 transition cursor-pointer active:scale-95 backdrop-blur-md shadow-sm [.light-theme_&]:bg-slate-800 [.light-theme_&]:border-slate-700/30 [.light-theme_&]:text-slate-100 [.light-theme_&]:hover:bg-slate-700/10 [.light-theme_&]:shadow-sm"
-              title="点击更改分类文件夹"
+              className="group inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 hover:bg-white/15 border border-white/15 text-xs text-white/90 transition cursor-pointer active:scale-95 backdrop-blur-md shadow-xs [.light-theme_&]:bg-stone-100 [.light-theme_&]:border-stone-200 [.light-theme_&]:text-stone-700 [.light-theme_&]:hover:bg-stone-200 shrink min-w-0"
+              title={currentFolderPath ? `文件夹: ${currentFolderPath}（点击更改）` : '未分类（点击归类）'}
             >
               <FolderIcon className="w-3.5 h-3.5 text-white/70 [.light-theme_&]:text-stone-700 shrink-0 transition-transform group-hover:scale-105" />
-              <span className="font-medium tracking-wide">
+              <span className="font-medium tracking-wide truncate max-w-[150px] sm:max-w-[240px]">
                 {currentFolderPath ? `文件夹: ${currentFolderPath}` : '未分类（点击归类）'}
               </span>
-              <ChevronRight className="w-3 h-3 text-white/40 [.light-theme_&]:text-black/30 group-hover:translate-x-0.5 transition-transform" />
+              <ChevronRight className="w-3 h-3 text-white/40 [.light-theme_&]:text-stone-500 shrink-0 group-hover:translate-x-0.5 transition-transform" />
             </button>
           </div>
+
+          {/* 字符 / Token 胶囊 & 简介标志按钮 (仅普通角色卡展示，工具区/预设/世界书等不展示) */}
+          {!isToolCard && (
+            <div className="flex items-center justify-center gap-2 mt-2 max-w-full px-2 flex-wrap">
+              {/* 字符 / Token 统计胶囊 (自然融入原生胶囊设计，无⚡图标) */}
+              <button
+                onClick={() => setShowTokenBreakdownModal(true)}
+                className="group inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 hover:bg-white/15 border border-white/15 text-xs text-white/90 transition cursor-pointer active:scale-95 backdrop-blur-md shadow-xs [.light-theme_&]:bg-stone-100 [.light-theme_&]:border-stone-200 [.light-theme_&]:text-stone-700 [.light-theme_&]:hover:bg-stone-200 shrink-0 font-medium"
+                title="点击查看各字段 Token 详细分析与上下文占比"
+              >
+                <FileText className="w-3.5 h-3.5 text-white/70 [.light-theme_&]:text-stone-700 shrink-0 transition-transform group-hover:scale-105" />
+                <span className="font-mono tracking-wide">
+                  {formatTokenCount(tokenBreakdown.totalTokens)} T
+                </span>
+                <span className="text-[10px] opacity-75 font-normal">
+                  (常驻 {formatTokenCount(tokenBreakdown.permanentTokens)})
+                </span>
+              </button>
+
+              {/* 简介标志按钮 */}
+              <button
+                onClick={() => setShowSummaryModal(true)}
+                className="group inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 hover:bg-white/15 border border-white/15 text-xs text-white/90 transition cursor-pointer active:scale-95 backdrop-blur-md shadow-xs [.light-theme_&]:bg-stone-100 [.light-theme_&]:border-stone-200 [.light-theme_&]:text-stone-700 [.light-theme_&]:hover:bg-stone-200 shrink-0"
+                title="查看与重新生成简介"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-white/70 [.light-theme_&]:text-stone-700 shrink-0 transition-transform group-hover:scale-105" />
+                <span className="font-medium tracking-wide">简介</span>
+              </button>
+            </div>
+          )}
           
           {/* Metadata Section - Collapsible Drawer with Sleek Handle */}
           <div className="w-full max-w-lg mt-2 px-2 sm:px-4 flex flex-col items-center">
@@ -1191,21 +1235,26 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
                           </button>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-1.5 min-w-0 justify-end truncate">
-                          {data.extensions?.source || data.source ? (
+                        <div className="flex items-center gap-1.5 min-w-0 justify-end">
+                          {data.extensions?.source || data.source || character.sourceUrl ? (
                             <a 
-                              href={data.extensions?.source || data.source} 
+                              href={data.extensions?.source || data.source || character.sourceUrl} 
                               target="_blank" 
                               rel="noopener noreferrer"
-                              className="text-blue-400 [.light-theme_&]:!text-[#007aff] hover:underline flex items-center gap-1 truncate font-medium text-xs sm:text-sm cursor-pointer"
+                              className="text-blue-400 [.light-theme_&]:!text-[#007aff] hover:underline flex items-center gap-1 truncate font-medium text-xs sm:text-sm cursor-pointer min-w-0 font-mono"
+                              title={data.extensions?.source || data.source || character.sourceUrl}
                             >
                               <ExternalLink className="w-3 h-3 shrink-0 text-blue-400 [.light-theme_&]:!text-[#007aff]" />
-                              <span className="truncate">{data.extensions?.source || data.source}</span>
+                              <span className="truncate max-w-[200px] sm:max-w-[280px]">{data.extensions?.source || data.source || character.sourceUrl}</span>
                             </a>
                           ) : (
-                            <span className="text-white/60 [.light-theme_&]:!text-[#0f172a] font-normal text-xs sm:text-sm">无链接</span>
+                            <span className="text-white/60 [.light-theme_&]:!text-[#0f172a] font-normal text-xs sm:text-sm">无来源</span>
                           )}
-                          <button onClick={() => { setTempSource(data.extensions?.source || data.source || ''); setIsEditingSource(true); }} className="p-1 text-white/50 hover:text-white [.light-theme_&]:!text-slate-500 [.light-theme_&]:hover:!text-[#0f172a] transition cursor-pointer">
+                          <button 
+                            onClick={() => { setTempSource(data.extensions?.source || data.source || character.sourceUrl || ''); setIsEditingSource(true); }} 
+                            className="p-1 text-white/50 hover:text-white [.light-theme_&]:!text-slate-500 [.light-theme_&]:hover:!text-[#0f172a] transition cursor-pointer shrink-0"
+                            title="修改来源网址"
+                          >
                             <Edit2 className="w-3 h-3" />
                           </button>
                         </div>
@@ -1691,6 +1740,32 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
         onClose={() => setIsMoveFolderOpen(false)}
         onMove={handleMoveFolder}
       />
+
+      {showTokenBreakdownModal && character && (
+        <TokenBreakdownModal
+          isOpen={true}
+          onClose={() => setShowTokenBreakdownModal(false)}
+          charName={character.name}
+          breakdown={tokenBreakdown}
+          isLightMode={isLightMode}
+        />
+      )}
+
+      {showSummaryModal && character && (
+        <CharacterSummaryModal
+          character={character}
+          onClose={() => setShowSummaryModal(false)}
+          onOpenDetail={() => setShowSummaryModal(false)}
+          onSummaryUpdated={async () => {
+            const fresh = await getCharacter(character.id);
+            if (fresh) {
+              setCharacter(fresh);
+            }
+          }}
+          isLightMode={isLightMode}
+        />
+      )}
+
     </motion.div>
   );
 });

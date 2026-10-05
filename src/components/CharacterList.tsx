@@ -33,6 +33,8 @@ import {
   Image as ImageIcon,
   Heart,
 } from "lucide-react";
+import { formatTokenCount, getCharacterTokenBreakdown, CharacterTokenBreakdown } from "../lib/tokens";
+import { TokenBreakdownModal } from "./TokenBreakdownModal";
 import {
   getCharacters,
   deleteCharacter,
@@ -174,7 +176,7 @@ function SortableItemWrapper({
           <div className="w-10 h-10 rounded-2xl bg-blue-500/90 backdrop-blur-md flex items-center justify-center text-white shadow-lg mb-1.5 border border-white/20">
             <Link2 className="w-5 h-5 stroke-[2.2]" />
           </div>
-          <span className="text-[11px] font-bold !text-white !bg-[#0f172a] px-3 py-1 rounded-full shadow-lg border border-blue-400/40 tracking-tight">
+          <span className="text-[11px] font-bold text-white bg-slate-900 [.light-theme_&]:!bg-[#007aff] [.light-theme_&]:!text-white px-3 py-1 rounded-full shadow-lg border border-blue-400/40 tracking-tight">
             松手立即绑定
           </span>
         </div>
@@ -184,7 +186,7 @@ function SortableItemWrapper({
           <div className="w-10 h-10 rounded-2xl bg-blue-500/90 backdrop-blur-md flex items-center justify-center text-white shadow-lg mb-1.5 border border-white/20">
             <FolderInput className="w-5 h-5 stroke-[2.2]" />
           </div>
-          <span className="text-[11px] font-bold !text-white !bg-[#0f172a] px-3 py-1 rounded-full shadow-lg border border-blue-400/40 tracking-tight">
+          <span className="text-[11px] font-bold text-white bg-slate-900 [.light-theme_&]:!bg-[#007aff] [.light-theme_&]:!text-white px-3 py-1 rounded-full shadow-lg border border-blue-400/40 tracking-tight">
             松手移入文件夹
           </span>
         </div>
@@ -298,6 +300,24 @@ export function CharacterList({
       }
     };
   }, [propIsLightMode]);
+  const [showMainTokens, setShowMainTokens] = useState<boolean>(() => {
+    return typeof localStorage !== "undefined" && localStorage.getItem("miu_show_main_page_tokens") !== "false";
+  });
+
+  useEffect(() => {
+    const handleTokenVisChanged = (e: any) => {
+      if (e.detail && typeof e.detail.show === "boolean") {
+        setShowMainTokens(e.detail.show);
+      } else if (typeof localStorage !== "undefined") {
+        setShowMainTokens(localStorage.getItem("miu_show_main_page_tokens") !== "false");
+      }
+    };
+    window.addEventListener("mainPageTokensVisibilityChanged", handleTokenVisChanged);
+    return () => {
+      window.removeEventListener("mainPageTokensVisibilityChanged", handleTokenVisChanged);
+    };
+  }, []);
+
   const [characters, setCharacters] = useState<CharacterCard[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [paginatedFolders, setPaginatedFolders] = useState<Folder[]>([]);
@@ -393,6 +413,7 @@ export function CharacterList({
     };
   }, []);
   const [totalCharacters, setTotalCharacters] = useState(0);
+  const [totalAllCharacters, setTotalAllCharacters] = useState(0);
 
   const folderKey = folderId || "root";
   const [page, setPage] = useState<number>(() => {
@@ -427,6 +448,27 @@ export function CharacterList({
       (localStorage.getItem("tavern_sortBy") as SortOption) || "newest_import",
   );
   const [isSortOpen, setIsSortOpen] = useState(false);
+  const [tokenModalChar, setTokenModalChar] = useState<{
+    name: string;
+    breakdown: CharacterTokenBreakdown;
+  } | null>(null);
+
+  const handleOpenTokenBreakdown = useCallback(async (char: CharacterCard) => {
+    try {
+      let data = char.data;
+      if (!data || Object.keys(data).length === 0) {
+        const fullChar = await getCharacter(char.id);
+        if (fullChar?.data) data = fullChar.data;
+      }
+      const breakdown = getCharacterTokenBreakdown(data);
+      setTokenModalChar({
+        name: char.name,
+        breakdown,
+      });
+    } catch (err) {
+      console.error("Failed to load token breakdown", err);
+    }
+  }, []);
 
   const [allTags, setAllTags] = useState<string[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -1250,8 +1292,16 @@ export function CharacterList({
         debouncedSearchQuery,
         selectedTags,
       );
+      const totalAllChars = folderId
+        ? totalChars
+        : await getFilteredCharacterCount(
+            "all",
+            debouncedSearchQuery,
+            selectedTags,
+          );
       if (reqId !== loadDataReqIdRef.current) return;
       setTotalCharacters(totalChars);
+      setTotalAllCharacters(totalAllChars);
 
       const itemsTotal = totalFolderCount + totalChars;
       setTotalItems(itemsTotal);
@@ -1467,7 +1517,8 @@ export function CharacterList({
       setFolders((prev) => prev.filter((f) => !folderIds.includes(f.id)));
       setCharacters((prev) => prev.filter((c) => !charIds.includes(c.id)));
       setTotalCharacters((prev) => prev - charIds.length);
-            setSelectedIds(new Set());
+      setTotalAllCharacters((prev) => Math.max(0, prev - charIds.length));
+      setSelectedIds(new Set());
       setProgress({
         current: 0,
         total: targetCount,
@@ -1608,6 +1659,7 @@ export function CharacterList({
       if (deleteSource) {
         setCharacters((prev) => prev.filter((c) => c.id !== fullQrChar.id));
         setTotalCharacters((prev) => Math.max(0, prev - 1));
+        setTotalAllCharacters((prev) => Math.max(0, prev - 1));
         setTotalItems((prev) => Math.max(0, prev - 1));
       }
 
@@ -1633,6 +1685,35 @@ export function CharacterList({
     const qrCharId = Array.from(selectedIds)[0];
     if (!qrCharId) return;
     await executeBindQR(qrCharId, targetCharId, false);
+  };
+
+  const cleanExportFolderParts = (folderName: string, charName: string, uniqueName?: string): string[] => {
+    if (!folderName || folderName === "未归类") return [];
+    const charLower = getSafeFilename(charName).toLowerCase().trim();
+    const uniqueLower = (uniqueName ? getSafeFilename(uniqueName) : charLower).toLowerCase().trim();
+    const ignored = new Set([
+      charLower,
+      uniqueLower,
+      "替换头像",
+      "替换卡面",
+      "版本历史",
+      "聊天记录",
+      "alt_avatars",
+      "avatars",
+      "chats",
+    ]);
+
+    const rawParts = folderName.split("/").map((p) => getSafeFilename(p.trim())).filter(Boolean);
+    const cleanParts: string[] = [];
+
+    for (const p of rawParts) {
+      const pLower = p.toLowerCase();
+      if (ignored.has(pLower)) continue;
+      if (cleanParts.length > 0 && cleanParts[cleanParts.length - 1].toLowerCase() === pLower) continue;
+      cleanParts.push(p);
+    }
+
+    return cleanParts;
   };
 
   const addCharacterToZip = async (
@@ -2104,8 +2185,8 @@ export function CharacterList({
               const autoCategory = getCharacterCategoryPrefix(char);
               prefix = autoCategory === "未归类" ? "" : `${autoCategory}/`;
             } else {
-              prefix =
-                folderName.split("/").map(getSafeFilename).join("/") + "/";
+              const parts = cleanExportFolderParts(folderName, char.name, uniqueName);
+              prefix = parts.length > 0 ? parts.join("/") + "/" : "";
             }
 
             await addCharacterToZip(
@@ -2170,10 +2251,10 @@ export function CharacterList({
               await addCharacterToZip(char, uZip || zip, undefined, uniqueName);
             } else {
               let currentZip: JSZip = zip;
-              const parts = folderName.split("/");
+              const parts = cleanExportFolderParts(folderName, char.name, uniqueName);
               for (const p of parts) {
                 currentZip =
-                  currentZip.folder(getSafeFilename(p)) || currentZip;
+                  currentZip.folder(p) || currentZip;
               }
               await addCharacterToZip(char, currentZip, undefined, uniqueName);
             }
@@ -2275,7 +2356,8 @@ export function CharacterList({
                 autoCategory === "未归类" ? [] : [autoCategory],
               );
             } else {
-              await pushCharTask(id, folderName.split("/"));
+              const cleanParts = cleanExportFolderParts(folderName, char.name);
+              await pushCharTask(id, cleanParts);
             }
           }
         }
@@ -2298,8 +2380,9 @@ export function CharacterList({
           if (!char) continue;
 
           const uniqueName = getUniqueName(char.name);
+          const parts = cleanExportFolderParts(task.path.join("/"), char.name, uniqueName);
           let currentZip: JSZip = zip;
-          for (const part of task.path) {
+          for (const part of parts) {
             currentZip = currentZip.folder(getSafeFilename(part)) || currentZip;
           }
           await addCharacterToZip(char, currentZip, undefined, uniqueName);
@@ -2437,7 +2520,7 @@ export function CharacterList({
         type="file"
         ref={coverInputRef}
         className="hidden"
-        accept="image/png, image/jpeg, image/webp, image/gif,*/*"
+        accept="image/png, image/jpeg, image/webp, image/gif, image/*"
         onChange={handleCoverUpload}
       />
       <motion.header
@@ -2569,11 +2652,19 @@ export function CharacterList({
                 </div>
               )}
               <p className="text-slate-400 text-xs mt-0.5 truncate [.light-theme_&]:!text-[#64748b]">
-                {folders.length > 0 && totalCharacters > 0
-                  ? `${folders.length} 个文件夹 · ${totalCharacters} 个角色`
-                  : folders.length > 0
-                    ? `${folders.length} 个文件夹`
-                    : `管理你的角色卡片 (${totalCharacters})`}
+                {folderId ? (
+                  folders.length > 0 && totalCharacters > 0
+                    ? `${folders.length} 个子文件夹 · ${totalCharacters} 个角色`
+                    : folders.length > 0
+                      ? `${folders.length} 个子文件夹`
+                      : `${totalCharacters} 个角色`
+                ) : (
+                  folders.length > 0 && totalAllCharacters > 0
+                    ? `${folders.length} 个文件夹 · ${totalAllCharacters} 个角色`
+                    : folders.length > 0
+                      ? `${folders.length} 个文件夹`
+                      : `管理你的角色卡片 (${totalAllCharacters})`
+                )}
               </p>
             </div>
 
@@ -2653,6 +2744,8 @@ export function CharacterList({
                         { value: "newest_import", label: "最新导入" },
                         { value: "oldest_import", label: "最旧导入" },
                         { value: "recently_modified", label: "最近修改" },
+                        { value: "tokens_desc", label: "Token 数量 (多到少)" },
+                        { value: "tokens_asc", label: "Token 数量 (少到多)" },
                         { value: "a_z", label: "A - Z" },
                         { value: "z_a", label: "Z - A" },
                       ].map((option) => (
@@ -3067,6 +3160,7 @@ export function CharacterList({
                         selectionMode={selectionMode}
                         isSelected={selectedIds.has(char.id)}
                         viewMode={viewMode}
+                        showMainTokens={showMainTokens}
                         onClick={() => {
                           if (selectionMode) toggleSelection(char.id);
                           else onSelect(char.id);
@@ -3079,6 +3173,7 @@ export function CharacterList({
                           }
                         }}
                         onToggleFavorite={(e) => handleToggleFavorite(e, char.id)}
+                        onOpenTokenBreakdown={handleOpenTokenBreakdown}
                       />
                     </SortableItemWrapper>
                   ))}
@@ -3105,6 +3200,7 @@ export function CharacterList({
                         selectionMode={selectionMode}
                         isSelected={selectedIds.has(char.id)}
                         viewMode={viewMode}
+                        showMainTokens={showMainTokens}
                         onClick={() => {
                           if (selectionMode) toggleSelection(char.id);
                           else onSelect(char.id);
@@ -3117,6 +3213,7 @@ export function CharacterList({
                           }
                         }}
                         onToggleFavorite={(e) => handleToggleFavorite(e, char.id)}
+                        onOpenTokenBreakdown={handleOpenTokenBreakdown}
                       />
                     </SortableItemWrapper>
                   ))}
@@ -3251,7 +3348,7 @@ export function CharacterList({
                   whileHover={{ scale: 1.08 }}
                   whileTap={{ scale: 0.92 }}
                   onClick={scrollToTop}
-                  className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-xl transition-all duration-200 cursor-pointer shrink-0 shadow-md bg-slate-900/65 hover:bg-slate-800/80 border border-white/15 text-white [.light-theme_&]:!bg-slate-800 [.light-theme_&]:hover:!bg-slate-700/10 [.light-theme_&]:!border-none [.light-theme_&]:!text-slate-100 [.light-theme_&]:!shadow-sm active:scale-95"
+                  className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-xl transition-all duration-200 cursor-pointer shrink-0 shadow-md bg-slate-900/80 hover:bg-slate-800 border border-white/20 text-white [.light-theme_&]:!bg-white [.light-theme_&]:!border-[#cbd5e1] [.light-theme_&]:!text-[#0f172a] [.light-theme_&]:hover:!bg-[#f1f5f9] [.light-theme_&]:!shadow-md active:scale-95"
                   title="回到顶部"
                 >
                   <ChevronLeft className="w-5 h-5 rotate-90 stroke-[2.2]" />
@@ -3278,7 +3375,7 @@ export function CharacterList({
                       setIsAddMenuOpen(false);
                       setIsCreatingFolder(true);
                     }}
-                    className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-xl transition-all duration-200 cursor-pointer shrink-0 shadow-md bg-slate-900/65 hover:bg-slate-800/80 border border-white/15 text-white [.light-theme_&]:!bg-slate-800 [.light-theme_&]:hover:!bg-slate-700/10 [.light-theme_&]:!border-none [.light-theme_&]:!text-slate-100 [.light-theme_&]:!shadow-sm active:scale-95"
+                    className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-xl transition-all duration-200 cursor-pointer shrink-0 shadow-md bg-slate-900/80 hover:bg-slate-800 border border-white/20 text-white [.light-theme_&]:!bg-white [.light-theme_&]:!border-[#cbd5e1] [.light-theme_&]:!text-[#0f172a] [.light-theme_&]:hover:!bg-[#f1f5f9] [.light-theme_&]:!shadow-md active:scale-95"
                     title="新建文件夹"
                   >
                     <FolderPlus className="w-4.5 h-4.5 stroke-[2]" />
@@ -3292,7 +3389,7 @@ export function CharacterList({
                       setIsAddMenuOpen(false);
                       onImport();
                     }}
-                    className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-xl transition-all duration-200 cursor-pointer shrink-0 shadow-md bg-slate-900/65 hover:bg-slate-800/80 border border-white/15 text-white [.light-theme_&]:!bg-slate-800 [.light-theme_&]:hover:!bg-slate-700/10 [.light-theme_&]:!border-none [.light-theme_&]:!text-slate-100 [.light-theme_&]:!shadow-sm active:scale-95"
+                    className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-xl transition-all duration-200 cursor-pointer shrink-0 shadow-md bg-slate-900/80 hover:bg-slate-800 border border-white/20 text-white [.light-theme_&]:!bg-white [.light-theme_&]:!border-[#cbd5e1] [.light-theme_&]:!text-[#0f172a] [.light-theme_&]:hover:!bg-[#f1f5f9] [.light-theme_&]:!shadow-md active:scale-95"
                     title="导入角色/数据"
                   >
                     <UploadCloud className="w-4.5 h-4.5 stroke-[2]" />
@@ -3307,7 +3404,7 @@ export function CharacterList({
               whileHover={{ scale: 1.08 }}
               whileTap={{ scale: 0.92 }}
               onClick={() => setIsAddMenuOpen(!isAddMenuOpen)}
-              className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-xl transition-all duration-200 cursor-pointer shrink-0 shadow-md bg-slate-900/75 hover:bg-slate-800/90 border border-white/15 text-white [.light-theme_&]:!bg-slate-800 [.light-theme_&]:hover:!bg-slate-700/10 [.light-theme_&]:!border-none [.light-theme_&]:!text-slate-100 [.light-theme_&]:!shadow-sm active:scale-95"
+              className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-xl transition-all duration-200 cursor-pointer shrink-0 shadow-md bg-slate-900/80 hover:bg-slate-800 border border-white/20 text-white [.light-theme_&]:!bg-white [.light-theme_&]:!border-[#cbd5e1] [.light-theme_&]:!text-[#0f172a] [.light-theme_&]:hover:!bg-[#f1f5f9] [.light-theme_&]:!shadow-md active:scale-95"
               title="展开选项"
             >
               <Plus className={`w-5 h-5 stroke-[2.2] transition-transform duration-200 ${isAddMenuOpen ? 'rotate-45' : ''}`} />
@@ -3637,6 +3734,16 @@ export function CharacterList({
           }
         }}
       />
+
+      {tokenModalChar && (
+        <TokenBreakdownModal
+          isOpen={!!tokenModalChar}
+          onClose={() => setTokenModalChar(null)}
+          charName={tokenModalChar.name}
+          breakdown={tokenModalChar.breakdown}
+          isLightMode={isLightMode}
+        />
+      )}
     </div>
   );
 }
@@ -3646,18 +3753,22 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
   onClick,
   onLongPress,
   onToggleFavorite,
+  onOpenTokenBreakdown,
   selectionMode,
   isSelected,
   viewMode,
+  showMainTokens = true,
 }: {
   key?: React.Key;
   char: CharacterCard;
   onClick: () => void;
   onLongPress: () => void;
   onToggleFavorite?: (e: React.MouseEvent) => void;
+  onOpenTokenBreakdown?: (char: CharacterCard) => void;
   selectionMode: boolean;
   isSelected: boolean;
   viewMode: "grid" | "list" | "masonry";
+  showMainTokens?: boolean;
 }) {
   const defaultFallback = getFallbackAvatar(char.name || char.id, char.tags?.join(',') || (char.isTool ? 'tool' : undefined));
   const initialUrl = resolveAvatarUrl(char.avatarUrlFallback, char.name || char.id, char.tags?.join(',') || (char.isTool ? 'tool' : undefined));
@@ -3888,6 +3999,19 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
                 <span>{badgeInfo.label}</span>
               </span>
             )}
+            {showMainTokens && !badgeInfo && char.tokenCount !== undefined && char.tokenCount > 0 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenTokenBreakdown?.(char);
+                }}
+                className="text-[10px] bg-white/10 hover:bg-white/15 border border-white/15 text-white/90 [.light-theme_&]:!bg-stone-100 [.light-theme_&]:!border-stone-200 [.light-theme_&]:!text-stone-700 px-1.5 py-0.5 rounded-md flex-shrink-0 flex items-center font-mono font-medium transition cursor-pointer select-none active:scale-95 shadow-xs"
+                title={`Token 数量: ${char.tokenCount.toLocaleString()} (常驻: ${formatTokenCount(char.permanentTokens || 0)})，点击查看拆解`}
+              >
+                <span>{formatTokenCount(char.tokenCount)} T</span>
+              </button>
+            )}
             {hasTags && (
               <div className="flex gap-1 overflow-hidden shrink-0">
                 {charTags.slice(0, 3).map((t: string) => (
@@ -4010,6 +4134,20 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
         </div>
       )}
 
+      {showMainTokens && !badgeInfo && char.tokenCount !== undefined && char.tokenCount > 0 && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenTokenBreakdown?.(char);
+          }}
+          className={`absolute ${badgeInfo ? "top-8.5" : "top-2"} left-2 z-10 px-1.5 py-0.5 bg-black/60 hover:bg-black/80 backdrop-blur-md rounded-md text-[10px] font-mono font-medium text-white/90 hover:text-white border border-white/20 flex items-center shadow-xs transition cursor-pointer select-none active:scale-95`}
+          title={`Token 数量: ${char.tokenCount.toLocaleString()} (常驻: ${formatTokenCount(char.permanentTokens || 0)})，点击查看拆解`}
+        >
+          <span>{formatTokenCount(char.tokenCount)} T</span>
+        </button>
+      )}
+
       {/* Top right Heart favorite button */}
       {!selectionMode && onToggleFavorite && (
         <button
@@ -4037,6 +4175,7 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
   );
 },
 (prevProps, nextProps) => {
+  if (prevProps.showMainTokens !== nextProps.showMainTokens) return false;
   if (prevProps.viewMode !== nextProps.viewMode) return false;
   if (prevProps.selectionMode !== nextProps.selectionMode) return false;
   if (prevProps.isSelected !== nextProps.isSelected) return false;
@@ -4051,6 +4190,8 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
   if (p.deletedAt !== n.deletedAt) return false;
   if (p.avatarBlob !== n.avatarBlob) return false;
   if (p.localFilePath !== n.localFilePath) return false;
+  if (p.tokenCount !== n.tokenCount) return false;
+  if (p.permanentTokens !== n.permanentTokens) return false;
 
   return true;
 }

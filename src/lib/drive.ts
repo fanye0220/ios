@@ -60,11 +60,70 @@ let currentAccessToken: string | null = null;
 
 export const getAuthCurrentUser = (): User | null => auth.currentUser;
 
+export async function ensureValidAccessToken(): Promise<string | null> {
+  const expirationStr = localStorage.getItem('google_drive_token_expiration');
+  const tokenExpiration = expirationStr ? Number(expirationStr) : 0;
+  
+  if (cachedAccessToken && tokenExpiration > Date.now() + 60000) {
+    return cachedAccessToken;
+  }
+
+  // Token is expired or missing. Try silent native refresh if on Android
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const result = await FirebaseAuthentication.signInWithGoogle({ scopes: ['https://www.googleapis.com/auth/drive.file'] });
+      if (result.credential?.accessToken) {
+        cachedAccessToken = result.credential.accessToken;
+        const expiresAt = Date.now() + 3500 * 1000;
+        localStorage.setItem('google_drive_access_token', cachedAccessToken);
+        localStorage.setItem('google_drive_token_expiration', expiresAt.toString());
+        currentAccessToken = cachedAccessToken;
+        const currentUser = auth.currentUser;
+        if (currentUser) {
+          window.dispatchEvent(new CustomEvent('google_auth_changed', { detail: { user: currentUser, token: cachedAccessToken } }));
+        }
+        return cachedAccessToken;
+      }
+    } catch (e) {
+      console.log('[NativeAuth] Silent Google token refresh info:', e);
+    }
+  }
+
+  return cachedAccessToken;
+}
+
+function saveUserInfo(user: User) {
+  try {
+    const info = {
+      uid: user.uid,
+      email: user.email,
+      displayName: user.displayName,
+      photoURL: user.photoURL,
+    };
+    localStorage.setItem('google_drive_user_info', JSON.stringify(info));
+  } catch (e) {}
+}
+
+export function getStoredUserInfo(): any | null {
+  try {
+    const data = localStorage.getItem('google_drive_user_info');
+    return data ? JSON.parse(data) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // Initialize auth state listener. Call this on app load.
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
+  // Check for stored user info immediately to avoid flickering/jumping to login UI
+  const existingUser = getStoredUserInfo();
+  if (existingUser && onAuthSuccess) {
+    onAuthSuccess(existingUser as User, cachedAccessToken || "");
+  }
+
   // Check for redirect result on initialization (for Android WebView support)
   import('firebase/auth').then(({ getAuth, getRedirectResult, GoogleAuthProvider }) => {
     const authInstance = getAuth();
@@ -78,6 +137,7 @@ export const initAuth = (
           localStorage.setItem('google_drive_token_expiration', expiresAt.toString());
           currentAccessToken = cachedAccessToken;
           startAutoSyncRunner();
+          saveUserInfo(result.user);
           window.dispatchEvent(new CustomEvent('google_auth_changed', { detail: { user: result.user, token: cachedAccessToken } }));
           if (onAuthSuccess) onAuthSuccess(result.user, cachedAccessToken);
         }
@@ -89,28 +149,46 @@ export const initAuth = (
 
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        currentAccessToken = cachedAccessToken;
+      saveUserInfo(user);
+      let validToken = await ensureValidAccessToken();
+
+      if (validToken) {
+        currentAccessToken = validToken;
         startAutoSyncRunner();
-        window.dispatchEvent(new CustomEvent('google_auth_changed', { detail: { user, token: cachedAccessToken } }));
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
+      }
+
+      window.dispatchEvent(new CustomEvent('google_auth_changed', { detail: { user, token: validToken || "" } }));
+      if (onAuthSuccess) onAuthSuccess(user, validToken || "");
+    } else {
+      const storedUser = getStoredUserInfo();
+      if (storedUser) {
+        // Firebase 掉线但本地还留着用户信息：先尝试拿有效 token，拿到才算真的已登录
+        const restoredToken = await ensureValidAccessToken();
+        if (restoredToken) {
+          cachedAccessToken = restoredToken;
+          currentAccessToken = restoredToken;
+          startAutoSyncRunner();
+          const restoredUser = (auth.currentUser || storedUser) as User;
+          if (auth.currentUser) saveUserInfo(auth.currentUser);
+          window.dispatchEvent(new CustomEvent('google_auth_changed', { detail: { user: restoredUser, token: restoredToken } }));
+          if (onAuthSuccess) onAuthSuccess(restoredUser, restoredToken);
+        } else {
+          cachedAccessToken = null;
+          currentAccessToken = null;
+          localStorage.removeItem('google_drive_access_token');
+          localStorage.removeItem('google_drive_token_expiration');
+          localStorage.removeItem('google_drive_user_info');
+          stopAutoSyncRunner();
+          window.dispatchEvent(new CustomEvent('google_auth_changed', { detail: { user: null, token: null } }));
+          if (onAuthFailure) onAuthFailure();
+        }
+      } else {
         cachedAccessToken = null;
         currentAccessToken = null;
-        localStorage.removeItem('google_drive_access_token');
-        localStorage.removeItem('google_drive_token_expiration');
         stopAutoSyncRunner();
         window.dispatchEvent(new CustomEvent('google_auth_changed', { detail: { user: null, token: null } }));
         if (onAuthFailure) onAuthFailure();
       }
-    } else {
-      cachedAccessToken = null;
-      currentAccessToken = null;
-      localStorage.removeItem('google_drive_access_token');
-      localStorage.removeItem('google_drive_token_expiration');
-      stopAutoSyncRunner();
-      window.dispatchEvent(new CustomEvent('google_auth_changed', { detail: { user: null, token: null } }));
-      if (onAuthFailure) onAuthFailure();
     }
   });
 };
@@ -171,6 +249,9 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
 
     cachedAccessToken = resultAccessToken;
+    if (resultUser) {
+      saveUserInfo(resultUser as User);
+    }
     const expiresAt = Date.now() + 3500 * 1000;
     if (cachedAccessToken) {
       localStorage.setItem('google_drive_access_token', cachedAccessToken);
@@ -189,7 +270,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken;
+  return await ensureValidAccessToken();
 };
 
 export const logout = async () => {
@@ -200,6 +281,7 @@ export const logout = async () => {
   cachedAccessToken = null;
   localStorage.removeItem('google_drive_access_token');
   localStorage.removeItem('google_drive_token_expiration');
+  localStorage.removeItem('google_drive_user_info');
   window.dispatchEvent(new CustomEvent('google_auth_changed', { detail: { user: null, token: null } }));
 };
 
@@ -362,6 +444,17 @@ export async function exportAllDataForBackup(onProgress: (msg: string) => void):
         } else if (snap.avatarBlob) {
           zip.file(`${folderPath}/Versions/${snap.id}.png`, snap.avatarBlob, { compression: "STORE" });
         }
+      }
+    }
+
+    if (char.avatarHistory && char.avatarHistory.length > 0) {
+      for (let idx = 0; idx < char.avatarHistory.length; idx++) {
+        const ab = char.avatarHistory[idx];
+        if (!ab) continue;
+        let ext = 'png';
+        if (ab.type === 'image/jpeg') ext = 'jpg';
+        else if (ab.type === 'image/webp') ext = 'webp';
+        zip.file(`${folderPath}/AvatarHistory/avatar_${idx + 1}.${ext}`, ab, { compression: "STORE" });
       }
     }
     
@@ -566,24 +659,10 @@ export async function restoreBackupFromBlob(blob: Blob, onProgress: (msg: string
   // --- OLD LOGIC FALLBACK (for strictly compatible zip or older backups) ---
   const foldersEntry = loadedZip.file("folders.json");
   if (foldersEntry) {
-    onProgress("正在以兼容模式恢复分类数据...");
-    const foldersJson = await foldersEntry.async("string");
-    try {
-      const folders = JSON.parse(foldersJson);
-      for (const folder of folders) {
-        await saveFolder(folder);
-      }
-    } catch (e) {
-      console.error("Failed to restore folders", e);
-    }
-  }
-
-  const foldersEntryCompat = loadedZip.file("folders.json");
-  if (foldersEntryCompat) {
     onProgress("正在恢复分类数据...");
     try {
       const db = await initDB();
-      const foldersJson = await foldersEntryCompat.async("string");
+      const foldersJson = await foldersEntry.async("string");
       const folders = JSON.parse(foldersJson);
       const tx = db.transaction('folders', 'readwrite');
       const os = tx.objectStore('folders');
@@ -641,7 +720,7 @@ export async function restoreBackupFromBlob(blob: Blob, onProgress: (msg: string
   }
 
   const filesToProcess = Object.values(loadedZip.files);
-  const characterFolders = new Map<string, { meta?: any, card?: any, avatar?: Blob, versions?: Map<string, Blob> }>();
+  const characterFolders = new Map<string, { meta?: any, card?: any, avatar?: Blob, versions?: Map<string, Blob>, avatarHistory?: Blob[] }>();
 
   for (const file of filesToProcess) {
     if (file.dir) continue;
@@ -658,6 +737,9 @@ export async function restoreBackupFromBlob(blob: Blob, onProgress: (msg: string
           const vId = fileName.replace(/\.[^/.]+$/, "");
           if (!folderEntry.versions) folderEntry.versions = new Map();
           folderEntry.versions.set(vId, await file.async("blob"));
+        } else if (lowerName.includes("/avatarhistory/")) {
+          if (!folderEntry.avatarHistory) folderEntry.avatarHistory = [];
+          folderEntry.avatarHistory.push(await file.async("blob"));
         } else if (fileName === "character.json") {
           const content = await file.async("string");
           try {
@@ -689,11 +771,12 @@ export async function restoreBackupFromBlob(blob: Blob, onProgress: (msg: string
     }
   }
 
+  const charsToRestore: any[] = [];
   let charCount = 0;
   for (const [folderName, data] of characterFolders.entries()) {
     if (data.meta || data.card) {
       charCount++;
-      if (charCount % 5 === 0) onProgress(`正在以兼容模式恢复角色卡片 (${charCount}/${characterFolders.size})...`);
+      if (charCount % 10 === 0) onProgress(`正在解析角色卡片 (${charCount}/${characterFolders.size})...`);
       
       let charToSave: any = {};
       
@@ -731,6 +814,10 @@ export async function restoreBackupFromBlob(blob: Blob, onProgress: (msg: string
         charToSave.avatarBlob = data.avatar;
       }
 
+      if (data.avatarHistory && data.avatarHistory.length > 0) {
+        charToSave.avatarHistory = data.avatarHistory;
+      }
+
       if (charToSave.versionHistory && Array.isArray(charToSave.versionHistory)) {
         for (const snap of charToSave.versionHistory) {
           if (data.versions && data.versions.has(snap.id)) {
@@ -741,11 +828,20 @@ export async function restoreBackupFromBlob(blob: Blob, onProgress: (msg: string
         }
       }
       
-      try {
-        await saveCharacter(charToSave);
-      } catch (err) {
-        console.error("Failed to restore character compat:", charToSave.id, err);
-      }
+      charsToRestore.push(charToSave);
+    }
+  }
+
+  if (charsToRestore.length > 0) {
+    onProgress(`正在批量保存恢复的角色卡片 (${charsToRestore.length}个)...`);
+    const { saveCharacters } = await import("./db");
+    const BATCH_SIZE = 50;
+    for (let b = 0; b < charsToRestore.length; b += BATCH_SIZE) {
+      const batch = charsToRestore.slice(b, b + BATCH_SIZE);
+      const currentDone = Math.min(b + batch.length, charsToRestore.length);
+      onProgress(`正在写入数据库 (${currentDone}/${charsToRestore.length})...`);
+      await saveCharacters(batch);
+      await new Promise(r => setTimeout(r, 0));
     }
   }
 

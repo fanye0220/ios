@@ -22,6 +22,7 @@ import {
   Terminal,
   RotateCcw,
   Sparkles,
+  FileText,
 } from "lucide-react";
 import { extractTavernData, parsePayload } from "../lib/png";
 import {
@@ -43,12 +44,40 @@ import { isAndroid, saveToGallery } from "../lib/appBridge";
 import { getAISettings, normalizeSillyTavernUrl, getSillyTavernAuthHeaders } from "../lib/ai";
 import JSZip from "jszip";
 import { useInView } from "../lib/useInView";
+import { getCharacterTokenBreakdown, formatTokenCount, CharacterTokenBreakdown } from "../lib/tokens";
+import { TokenBreakdownModal } from "./TokenBreakdownModal";
 import { withReadSlot } from "../lib/thumbCache";
 
 const tavernAvatarCache = new Map<string, string>();
 
 const ALT_FOLDERS = ["替换卡面", "替换头像", "avatars", "alt", "alternate"];
 const VERSION_FOLDERS = ["版本历史", "versions", "version_history", "history"];
+
+const SYSTEM_CONTAINER_BUCKETS = [
+  "角色卡", "角色卡片", "角色卡包", "角色卡片包", "角色包", "角色", "卡包", "卡片", "角包",
+  "characters", "cards", "character", "card",
+  "工具区", "工具包", "工具", "tools", "presets", "预设", "世界书", "world_info",
+  "聊天记录", "聊天", "chats", "chat",
+  "回收站", "trash",
+  "tavern_export", "miu_backup", "miu_autobackup", "chats_export", "backup", "backups", "export", "exports",
+  "sillytavern", "aitavern", "aitavern_backups"
+];
+
+function isSystemContainerName(name: string): boolean {
+  if (!name) return true;
+  const clean = name.trim().toLowerCase().replace(/[\-_0-9\s\(\)（）\.]/g, "");
+  if (!clean) return true;
+  if (SYSTEM_CONTAINER_BUCKETS.includes(clean)) return true;
+  return /^(角色卡|角色卡片|角色卡包|角色包|卡包|卡片|工具区|工具包|聊天记录|Tavern_Export|MIU_Backup|MIU_AutoBackup|chats_export|backup|export|cards|characters|sillytavern|aitavern)[\-_0-9A-Za-z_卷\s\(\)（）]*/i.test(name.trim());
+}
+
+function stripSystemContainerBucketParts(parts: string[]): string[] {
+  let res = [...parts];
+  while (res.length > 0 && isSystemContainerName(res[0])) {
+    res.shift();
+  }
+  return res;
+}
 
 interface Props {
   isOpen: boolean;
@@ -204,14 +233,40 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
       charName: string;
       folderId: string;
       folderPath: string;
+      breakdown?: CharacterTokenBreakdown;
+      isTool?: boolean;
     }> | null
   >(null);
+  const [importTokenSummary, setImportTokenSummary] = useState<{
+    totalTokens: number;
+    items: Array<{
+      cardId: string;
+      charName: string;
+      folderId?: string;
+      folderPath: string;
+      avatarBlob?: Blob;
+      avatarUrlFallback?: string;
+      breakdown: CharacterTokenBreakdown;
+      attachedChatsCount: number;
+      attachedAvatarsCount: number;
+      isTool?: boolean;
+    }>;
+  } | null>(null);
+  const [tokenSearchQuery, setTokenSearchQuery] = useState("");
+  const [selectedTokenBreakdown, setSelectedTokenBreakdown] = useState<{
+    name: string;
+    breakdown: CharacterTokenBreakdown;
+  } | null>(null);
+
   const [importedSuccessCount, setImportedSuccessCount] = useState(0);
   const [isReverting, setIsReverting] = useState(false);
 
   useEffect(() => {
     if (!isOpen) {
       setAutoCategorizedSummary(null);
+      setImportTokenSummary(null);
+      setSelectedTokenBreakdown(null);
+      setTokenSearchQuery("");
     }
   }, [isOpen]);
 
@@ -526,10 +581,13 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
       }
     >();
 
-    const parseChunk = async (
+    const progressTracker = {
+      current: 0,
+      total: fileArray.length,
+    };
+
+    const parseFiles = async (
       items: File[],
-      startIndex: number,
-      chunkSize: number,
       accumulatedParsed: ParsedItem[],
       accumulatedErrors: { file: string; error: string }[],
       extractedRootsMap: Map<
@@ -540,10 +598,19 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
           others: ParsedItem[];
         }
       >,
-    ) => {
-      const endIndex = Math.min(startIndex + chunkSize, items.length);
+    ): Promise<void> => {
+      for (let i = 0; i < items.length; i++) {
+        progressTracker.current++;
 
-      for (let i = startIndex; i < endIndex; i++) {
+        if (progressTracker.current % 10 === 0 || progressTracker.current === progressTracker.total) {
+          setProgress({
+            current: progressTracker.current,
+            total: progressTracker.total,
+            message: `正在解析文件 (${progressTracker.current}/${progressTracker.total})...`,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
         const file = items[i];
         const fullPath = file.webkitRelativePath || file.name;
         const normalizedPath = fullPath.replace(/\\/g, "/");
@@ -565,15 +632,17 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
         const inVersionFolder = folderSegments.some((p) =>
           VERSION_FOLDERS.includes(p),
         );
-        const inAltFolder = ALT_FOLDERS.includes(lastFolder);
+        const inAltFolder =
+          folderSegments.some((p) => ALT_FOLDERS.includes(p)) ||
+          /^(替换头像|替换卡面|avatar|alt)[\-_0-9]*/i.test(fileName);
         const isStudioMetaFile = fileName.toLowerCase() === "studio_meta.json";
 
         try {
           if (ext === "zip") {
             setProgress({
-              current: i + 1,
-              total: items.length,
-              message: `正在解压 ZIP 压缩包 ${fileName}...`,
+              current: Math.min(progressTracker.current, progressTracker.total),
+              total: progressTracker.total,
+              message: `正在读取 ZIP 数据包...`,
             });
             const zipContent = await JSZip.loadAsync(file, {
               decodeFileName: function (bytes: any) {
@@ -586,70 +655,96 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                 }
               },
             });
-            const rootFolderName = fileName.replace(/\.zip$/i, "");
+            const rawRootName = fileName.replace(/\.zip$/i, "").trim();
+            const isExportArchiveName = isSystemContainerName(rawRootName);
+
+            const fileEntries = Object.entries(zipContent.files).filter(
+              ([relPath, entry]) => {
+                if (entry.dir) return false;
+                const clean = relPath.replace(/\\/g, "/");
+                if (clean.includes("__MACOSX")) return false;
+                if (clean.split("/").some((p) => p.startsWith(".") || p === "Thumbs.db" || p === "desktop.ini")) return false;
+                return true;
+              }
+            );
+
+            // 检查压缩包内本身是否已经带有分类目录层级
+            const hasInternalFolders = fileEntries.some(([relPath]) => {
+              const clean = relPath.replace(/\\/g, "/");
+              return clean.includes("/");
+            });
+
+            // 永远不把 ZIP 压缩包的包名强制作为最外层新建文件夹，直接将其内容直接还原/解压到当前分类或对应子文件夹中
+            const shouldCreateRootFolder = false;
+            const rootFolderName = "";
 
             const zipFiles: File[] = [];
-            for (const [relativePath, zipEntry] of Object.entries(
-              zipContent.files,
-            )) {
-              if (zipEntry.dir) continue;
-              const cleanPath = relativePath.replace(/\\/g, "/");
-              if (
-                cleanPath.includes("__MACOSX") ||
-                cleanPath.split("/").some((p) => p.startsWith("."))
-              ) {
-                continue;
-              }
+            const BATCH_SIZE = 15;
+            for (let b = 0; b < fileEntries.length; b += BATCH_SIZE) {
+              const chunk = fileEntries.slice(b, b + BATCH_SIZE);
+              await Promise.all(
+                chunk.map(async ([relativePath, zipEntry]) => {
+                  let cleanPath = relativePath.replace(/\\/g, "/");
 
-              const blob = await zipEntry.async("blob");
-              const zipFileName = cleanPath.split("/").pop() || "file";
-              const lowerZipName = zipFileName.toLowerCase();
-              let zipFileType = blob.type || "application/octet-stream";
-              if (lowerZipName.endsWith(".png")) zipFileType = "image/png";
-              else if (/\.jpe?g$/.test(lowerZipName)) zipFileType = "image/jpeg";
-              else if (lowerZipName.endsWith(".webp")) zipFileType = "image/webp";
-              else if (lowerZipName.endsWith(".gif")) zipFileType = "image/gif";
-              else if (lowerZipName.endsWith(".json")) zipFileType = "application/json";
-              else if (lowerZipName.endsWith(".jsonl")) zipFileType = "application/json";
-              else if (lowerZipName.endsWith(".txt")) zipFileType = "text/plain";
-              else if (lowerZipName.endsWith(".js")) zipFileType = "text/javascript";
+                  let cleanSegments = cleanPath.split("/").filter(Boolean);
+                  // 自动剥离与压缩包同名的最外层包裹文件夹 (如 "试验品/card1.png" -> "card1.png")
+                  if (cleanSegments.length > 1 && cleanSegments[0].toLowerCase().trim() === rawRootName.toLowerCase().trim()) {
+                    cleanSegments = cleanSegments.slice(1);
+                  }
 
-              const entryDate = zipEntry.date
-                ? zipEntry.date.getTime()
-                : file.lastModified || Date.now();
-              const extractedFile = new File([blob], zipFileName, {
-                type: zipFileType,
-                lastModified: entryDate,
+                  // 自动剥离压缩包内部嵌套的顶层大类/容器包名 (如 "角色卡/日常/猫娘.png" -> "日常/猫娘.png")
+                  const strippedSegments = stripSystemContainerBucketParts(cleanSegments);
+                  if (strippedSegments.length > 0) {
+                    cleanPath = strippedSegments.join("/");
+                  }
+
+                  const blob = await zipEntry.async("blob");
+                  const zipFileName = cleanPath.split("/").pop() || "file";
+                  const lowerZipName = zipFileName.toLowerCase();
+                  let zipFileType = blob.type || "application/octet-stream";
+                  if (lowerZipName.endsWith(".png")) zipFileType = "image/png";
+                  else if (/\.jpe?g$/.test(lowerZipName)) zipFileType = "image/jpeg";
+                  else if (lowerZipName.endsWith(".webp")) zipFileType = "image/webp";
+                  else if (lowerZipName.endsWith(".gif")) zipFileType = "image/gif";
+                  else if (lowerZipName.endsWith(".json")) zipFileType = "application/json";
+                  else if (lowerZipName.endsWith(".jsonl")) zipFileType = "application/json";
+                  else if (lowerZipName.endsWith(".txt")) zipFileType = "text/plain";
+                  else if (lowerZipName.endsWith(".js")) zipFileType = "text/javascript";
+
+                  const entryDate = zipEntry.date
+                    ? zipEntry.date.getTime()
+                    : file.lastModified || Date.now();
+                  const extractedFile = new File([blob], zipFileName, {
+                    type: zipFileType,
+                    lastModified: entryDate,
+                  });
+                  (extractedFile as any).__miuFromZip = true;
+
+                  const simulatedPath = rootFolderName ? `${rootFolderName}/${cleanPath}` : cleanPath;
+                  Object.defineProperty(extractedFile, "webkitRelativePath", {
+                    value: simulatedPath,
+                    writable: false,
+                  });
+
+                  zipFiles.push(extractedFile);
+                })
+              );
+
+              const doneCount = Math.min(b + BATCH_SIZE, fileEntries.length);
+              setProgress({
+                current: doneCount,
+                total: fileEntries.length,
+                message: `正在解压归档卡片文件 (${doneCount}/${fileEntries.length})...`,
               });
-
-              const simulatedPath = `${rootFolderName}/${cleanPath}`;
-              Object.defineProperty(extractedFile, "webkitRelativePath", {
-                value: simulatedPath,
-                writable: false,
-              });
-
-              zipFiles.push(extractedFile);
+              await new Promise((resolve) => setTimeout(resolve, 0));
             }
 
             if (zipFiles.length > 0) {
-              const rootParts = rootFolderName.split("/").filter(Boolean);
-              const zipRootFolderId = await getOrCreateNestedFolder(
-                rootParts,
-                folderId || targetFolderId,
-              );
+              progressTracker.total = zipFiles.length;
+              progressTracker.current = 0;
 
-              if (zipRootFolderId) {
-                extractedRootsMap.set(rootFolderName, {
-                  folderId: zipRootFolderId,
-                  chars: [],
-                  others: [],
-                });
-              }
-
-              await parseChunk(
+              await parseFiles(
                 zipFiles,
-                0,
-                20,
                 accumulatedParsed,
                 accumulatedErrors,
                 extractedRootsMap,
@@ -671,7 +766,7 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                 file,
                 path: normalizedPath,
                 folder: folderName,
-                isMain: !inVersionFolder,
+                isMain: !inVersionFolder && !inAltFolder,
                 data: cardData,
                 isImage: true,
                 isVersion: inVersionFolder || undefined,
@@ -687,7 +782,7 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
               isImage: true,
               isVersion: inVersionFolder || undefined,
               errorMsg:
-                inAltFolder || inVersionFolder
+                inAltFolder || inVersionFolder || items.length > 1
                   ? undefined
                   : "未找到内嵌的酒馆角色数据",
             });
@@ -940,37 +1035,20 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
             error: err.message || "解析失败",
           });
         }
-      }
 
-      if (endIndex < items.length) {
-        setProgress({
-          current: endIndex,
-          total: items.length,
-          message: `正在解析文件 (${endIndex}/${items.length})...`,
-        });
-        setTimeout(
-          () =>
-            parseChunk(
-              items,
-              endIndex,
-              chunkSize,
-              accumulatedParsed,
-              accumulatedErrors,
-              extractedRootsMap,
-            ),
-          10,
-        );
-      } else {
-        await processImport(
-          accumulatedParsed,
-          accumulatedErrors,
-          extractedRootsMap,
-          targetFolderId,
-        );
       }
     };
 
-    parseChunk(fileArray, 0, 20, parsedItems, errors, extractedRoots);
+    // Await complete parsing of all files and zip archives
+    await parseFiles(fileArray, parsedItems, errors, extractedRoots);
+
+    // Proceed with importing all parsed items
+    await processImport(
+      parsedItems,
+      errors,
+      extractedRoots,
+      targetFolderId,
+    );
   };
     const processImport = async (
       items: ParsedItem[],
@@ -1028,16 +1106,15 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
       for (const item of mainItems) {
         const folderParts = item.folder
           .split("/")
-          .map((p) => p.trim())
+          .map((p) => p.trim().toLowerCase())
           .filter(Boolean);
-        const lastFolder = (
-          folderParts[folderParts.length - 1] || ""
-        ).toLowerCase();
-        if (ALT_FOLDERS.includes(lastFolder)) {
+        const inAlt =
+          folderParts.some((p) => ALT_FOLDERS.includes(p)) ||
+          /^(替换头像|替换卡面|avatar|alt)[\-_0-9]*/i.test(item.file.name);
+        const inVer = folderParts.some((p) => VERSION_FOLDERS.includes(p));
+        if (inAlt) {
           itemsToDemote.push(item);
-        } else if (
-          folderParts.some((p) => VERSION_FOLDERS.includes(p.toLowerCase()))
-        ) {
+        } else if (inVer) {
           versionItems.push(item);
           itemsToDemote.push(item);
         }
@@ -1055,13 +1132,23 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
       for (const alt of altImages) {
         const possibleMains = mainItems.filter((main) => {
           const mainPrefix = main.folder ? main.folder + "/" : "";
-          if (!alt.folder.startsWith(mainPrefix)) return false;
-          const relative = alt.folder.substring(mainPrefix.length);
-          const firstFolder = relative.split("/")[0];
-          return (
-            Boolean(firstFolder) &&
-            ALT_FOLDERS.includes(firstFolder.toLowerCase())
-          );
+          if (alt.folder.startsWith(mainPrefix)) {
+            const relative = alt.folder.substring(mainPrefix.length);
+            const firstFolder = (relative.split("/")[0] || "").toLowerCase();
+            if (ALT_FOLDERS.includes(firstFolder) || relative === "") {
+              return true;
+            }
+          }
+          const altFolderParts = alt.folder.split("/").map((p) => p.trim().toLowerCase()).filter(Boolean);
+          if (altFolderParts.length > 0 && ALT_FOLDERS.includes(altFolderParts[altFolderParts.length - 1])) {
+            const altParent = altFolderParts.slice(0, -1).join("/");
+            const mainFolderClean = main.folder.split("/").map((p) => p.trim().toLowerCase()).filter(Boolean).join("/");
+            if (altParent === mainFolderClean) return true;
+          }
+          if (main.folder && alt.folder && alt.folder.startsWith(main.folder)) {
+            return true;
+          }
+          return false;
         });
         possibleMains.sort((a, b) => b.folder.length - a.folder.length);
         if (possibleMains.length > 0) {
@@ -1146,6 +1233,7 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
           charName: string;
           folderId: string;
           folderPath: string;
+          breakdown?: CharacterTokenBreakdown;
         }> = [];
 
         const findFolderPath = (fId: string): string => {
@@ -1165,6 +1253,18 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
           return names.join(" / ") || "未知文件夹";
         };
 
+        // 判定本次导入文件是否全归属于同一个最外层包裹文件夹（例如拖入文件夹 "试验品"）
+        let commonTopFolder: string | null = null;
+        // 仅对"拖入文件夹"生效：ZIP 不做共同顶层剥离，否则会把真实文件夹当成外壳剥掉
+        const dragMainItems = mainItems.filter((m) => !(m.file as any).__miuFromZip);
+        const allMainFolders = dragMainItems.map((m) => m.folder).filter(Boolean);
+        if (allMainFolders.length > 0 && allMainFolders.length === dragMainItems.length) {
+          const firstTop = allMainFolders[0].split("/")[0]?.toLowerCase().trim();
+          if (firstTop && allMainFolders.every((f) => f.split("/")[0]?.toLowerCase().trim() === firstTop)) {
+            commonTopFolder = firstTop;
+          }
+        }
+
         const resolveFolderForItem = async (
           item: ParsedItem,
           prefix?: string[],
@@ -1172,22 +1272,64 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
           let assignFolderId: string | undefined =
             folderId || targetFolderId || undefined;
           if (item.folder) {
-            const parts = item.folder.split("/").filter(Boolean);
-            const topFolder = parts[0];
-            if (extractedRootsMap.has(topFolder)) {
-              const rootInfo = extractedRootsMap.get(topFolder)!;
-              const subParts = parts.slice(1);
-              assignFolderId =
-                subParts.length > 0
-                  ? await getOrCreateNestedFolder(subParts, rootInfo.folderId)
-                  : rootInfo.folderId;
-            } else {
+            let parts = item.folder.split("/").filter(Boolean);
+
+            // 1. 自动剥离顶层系统容器/大类包名 ("角色卡", "角色卡包", "characters", "工具区" 等)
+            parts = stripSystemContainerBucketParts(parts);
+
+            // 2. 自动剥离拖入文件夹的最外层容器包裹 (如拖入 "试验品" 文件夹，直接把内部文件平铺导入)
+            if (!(item.file as any).__miuFromZip && commonTopFolder && parts.length > 0 && parts[0].toLowerCase().trim() === commonTopFolder) {
+              parts = parts.slice(1);
+            }
+
+            // 3. 智能防嵌套剥离：角色同名导出文件夹剥离
+            if (parts.length > 0) {
+              const lastPart = parts[parts.length - 1].toLowerCase().trim();
+              const charBaseName = item.file.name.replace(/\.[^/.]+$/, "").toLowerCase().trim();
+              const rawCharName = String(
+                item.data?.name ||
+                item.data?.data?.name ||
+                item.data?.char_name ||
+                item.data?.character_name ||
+                ""
+              ).toLowerCase().trim();
+              const safeCharName = getSafeFilename(rawCharName).toLowerCase().trim();
+
+              if (
+                lastPart === charBaseName ||
+                (rawCharName && (lastPart === rawCharName || lastPart === safeCharName))
+              ) {
+                parts = parts.slice(0, -1);
+              }
+            }
+
+            // 再次剥离顶层系统容器
+            parts = stripSystemContainerBucketParts(parts);
+
+            if (parts.length > 0) {
+              const topFolder = parts[0];
+              if (extractedRootsMap.has(topFolder)) {
+                const rootInfo = extractedRootsMap.get(topFolder)!;
+                const subParts = parts.slice(1);
+                assignFolderId =
+                  subParts.length > 0
+                    ? await getOrCreateNestedFolder(subParts, rootInfo.folderId)
+                    : rootInfo.folderId;
+              } else {
+                assignFolderId = await getOrCreateNestedFolder(
+                  parts,
+                  folderId || targetFolderId,
+                );
+              }
+            } else if (prefix && prefix.length > 0) {
+              // 剥壳把工具分类名（世界书/预设/工具区）也剥掉了，这里回落到识别出的分类
               assignFolderId = await getOrCreateNestedFolder(
-                parts,
+                prefix,
                 folderId || targetFolderId,
               );
             }
           } else if (prefix && prefix.length > 0) {
+            // 工具分类名本身就是目标文件夹，不再走系统大类剥离
             assignFolderId = await getOrCreateNestedFolder(
               prefix,
               folderId || targetFolderId,
@@ -1214,9 +1356,30 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
         const newNameCounts = new Map<string, number>();
 
         const charsToSave: CharacterCard[] = [];
+        const importedCardsTokens: Array<{
+          cardId: string;
+          charName: string;
+          folderId?: string;
+          folderPath: string;
+          avatarBlob?: Blob;
+          avatarUrlFallback?: string;
+          breakdown: CharacterTokenBreakdown;
+          attachedChatsCount: number;
+          attachedAvatarsCount: number;
+          isTool?: boolean;
+        }> = [];
         let successCount = 0;
 
-        for (const item of mainItems) {
+        for (let mIdx = 0; mIdx < mainItems.length; mIdx++) {
+          const item = mainItems[mIdx];
+          if (mIdx % 25 === 0) {
+            setProgress({
+              current: mIdx,
+              total: mainItems.length,
+              message: `正在准备角色数据 (${mIdx}/${mainItems.length})...`,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
           try {
             const data = item.data;
             const file = item.file;
@@ -1411,8 +1574,23 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                 versionHistory.length > 0 ? versionHistory : undefined,
             };
 
+            const cardTokens = getCharacterTokenBreakdown(newCard.data);
+            newCard.tokenCount = cardTokens.totalTokens;
+            newCard.permanentTokens = cardTokens.permanentTokens;
             charsToSave.push(newCard);
             successCount++;
+
+            importedCardsTokens.push({
+              cardId: newCard.id,
+              charName,
+              folderId: assignFolderId,
+              folderPath: assignFolderId ? findFolderPath(assignFolderId) : "未分类",
+              avatarBlob: newCard.avatarBlob,
+              avatarUrlFallback: newCard.avatarUrlFallback,
+              breakdown: cardTokens,
+              attachedChatsCount: (altImagesByMain.get(item) || []).length,
+              attachedAvatarsCount: (versionHistory || []).length,
+            });
 
             if (autoCategorized && assignFolderId) {
               sameNameAutoSummary.push({
@@ -1420,6 +1598,7 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                 charName,
                 folderId: assignFolderId,
                 folderPath: findFolderPath(assignFolderId),
+                breakdown: cardTokens,
               });
             }
           } catch (err: any) {
@@ -1460,7 +1639,8 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
               item.toolPrefix,
             );
 
-            charsToSave.push({
+            const toolTokens = getCharacterTokenBreakdown(data);
+            const toolCard: CharacterCard = {
               id: crypto.randomUUID(),
               name: toolName,
               autoImportFilename: file.name,
@@ -1469,8 +1649,24 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
               createdAt: Date.now(),
               updatedAt: Date.now(),
               folderId: assignFolderId,
-            });
+              tokenCount: toolTokens.totalTokens,
+              permanentTokens: toolTokens.permanentTokens,
+            };
+
+            charsToSave.push(toolCard);
             successCount++;
+
+            importedCardsTokens.push({
+              cardId: toolCard.id,
+              charName: toolName,
+              folderId: assignFolderId,
+              folderPath: assignFolderId ? findFolderPath(assignFolderId) : "工具区",
+              avatarUrlFallback: toolCard.avatarUrlFallback,
+              breakdown: toolTokens,
+              attachedChatsCount: 0,
+              attachedAvatarsCount: 0,
+              isTool: true,
+            });
           } catch (err: any) {
             errors.push({ file: item.file.name, error: err.message || "未知错误" });
           }
@@ -1482,13 +1678,18 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
             total: charsToSave.length,
             message: "正在保存到数据库...",
           });
-          await saveCharacters(charsToSave, undefined, (current, total) => {
+          const BATCH_SIZE = 50;
+          for (let bIdx = 0; bIdx < charsToSave.length; bIdx += BATCH_SIZE) {
+            const batch = charsToSave.slice(bIdx, bIdx + BATCH_SIZE);
+            const currentSaved = Math.min(bIdx + batch.length, charsToSave.length);
             setProgress({
-              current,
-              total,
-              message: `正在写入本地数据库... ${current}/${total}`,
+              current: currentSaved,
+              total: charsToSave.length,
+              message: `正在写入本地数据库 (${currentSaved}/${charsToSave.length})...`,
             });
-          });
+            await saveCharacters(batch);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
         }
 
         // ---------- 聊天记录 ----------
@@ -1581,26 +1782,31 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
 
         setImportedSuccessCount(successCount);
 
-        if (errors.length > 0) {
-          setProgress(null);
-          setImportErrors(errors);
-          if (successCount > 0) {
-            await cleanupEmptyFolders();
-            onImported();
-          }
-          return;
-        }
-
         if (successCount === 0) {
           setProgress(null);
-          setError("未能成功导入任何文件。");
+          if (errors.length > 0) {
+            setImportErrors(errors);
+          } else {
+            setError("未能成功导入任何角色卡或关联数据。");
+          }
           return;
         }
 
         await cleanupEmptyFolders();
         setProgress(null);
 
-        if (sameNameAutoSummary.length > 0) {
+        // 如果部分辅助文件有轻微错误，但在已导入成功卡片时不阻断主结算界面
+        if (importedCardsTokens.length > 0) {
+          const totalTokens = importedCardsTokens.reduce((sum, item) => sum + item.breakdown.totalTokens, 0);
+          setImportTokenSummary({
+            totalTokens,
+            items: importedCardsTokens,
+          });
+          if (sameNameAutoSummary.length > 0) {
+            setAutoCategorizedSummary(sameNameAutoSummary);
+          }
+          onImported();
+        } else if (sameNameAutoSummary.length > 0) {
           setAutoCategorizedSummary(sameNameAutoSummary);
           onImported();
         } else {
@@ -1708,7 +1914,7 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
             className={`fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 backdrop-blur-2xl border rounded-3xl shadow-2xl z-[80] flex flex-col transition-all duration-300 ${isLightMode ? "bg-white text-slate-900 border-[#e2e8f0]" : "bg-slate-900/95 text-slate-100 border-white/10"} ${
               tavernMode
                 ? "w-[96vw] max-w-6xl h-[92vh] sm:h-[88vh] p-4 sm:p-6"
-                : progress ? "w-[92vw] max-w-[340px] sm:max-w-[380px] p-6 sm:p-7" : "w-[92vw] max-w-[420px] sm:max-w-[460px] p-5 sm:p-6"
+                : importTokenSummary ? "w-[94vw] max-w-[540px] max-h-[88vh] p-5 sm:p-6" : (progress ? "w-[92vw] max-w-[340px] sm:max-w-[380px] p-6 sm:p-7" : "w-[92vw] max-w-[420px] sm:max-w-[460px] p-5 sm:p-6")
             }`}
           >
             {/* Header Section */}
@@ -1732,7 +1938,7 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                 </div>
               ) : (
                 <h2 className="text-base sm:text-lg font-bold text-slate-100 [.light-theme_&]:!text-[#0f172a]">
-                  {autoCategorizedSummary ? "导入完成" : (progress ? "正在导入" : "导入角色卡")}
+                  {autoCategorizedSummary ? "导入完成" : (importTokenSummary ? "导入完成" : (progress ? "正在导入" : "导入角色卡"))}
                 </h2>
               )}
 
@@ -1740,7 +1946,7 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                 {(!progress || tavernMode) && (
                   <button
                     onClick={onClose}
-                    className="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center transition cursor-pointer bg-white/10 hover:bg-white/15 text-white/60 hover:text-white border-0 [.light-theme_&]:!bg-white [.light-theme_&]:hover:!bg-[#f1f5f9] [.light-theme_&]:active:!bg-[#e2e8f0] [.light-theme_&]:!text-[#64748b] [.light-theme_&]:hover:!text-[#0f172a] [.light-theme_&]:!border [.light-theme_&]:!border-[#e2e8f0] [.light-theme_&]:!shadow-2xs"
+                    className="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center transition cursor-pointer bg-white/10 hover:bg-white/20 text-white/90 hover:text-white border border-white/10 [.light-theme_&]:!bg-[#f1f5f9] [.light-theme_&]:hover:!bg-[#e2e8f0] [.light-theme_&]:active:!bg-[#cbd5e1] [.light-theme_&]:!text-[#0f172a] [.light-theme_&]:!border-[#e2e8f0] [.light-theme_&]:!shadow-2xs"
                     title="关闭"
                   >
                     <X className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -1752,9 +1958,9 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
             {/* Main Content Body */}
             {autoCategorizedSummary ? (
               <div className="py-2 flex flex-col flex-1 min-h-0">
-                <div className="flex items-center gap-3 text-emerald-500 mb-3.5 shrink-0">
-                  <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center">
-                    <CheckCircle className="w-5 h-5 text-emerald-500" />
+                <div className="flex items-center gap-3 mb-3.5 shrink-0">
+                  <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-[#34C759]/15 border border-[#34C759]/30 flex items-center justify-center shrink-0">
+                    <CheckCircle className="w-5 h-5 text-[#34C759]" />
                   </div>
                   <div>
                     <h3 className="font-bold text-base sm:text-lg text-slate-100 [.light-theme_&]:!text-[#0f172a]">导入完成</h3>
@@ -1762,9 +1968,7 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                   </div>
                 </div>
 
-                <div className={`rounded-2xl p-4 mb-4 shrink-0 border ${
-                  isLightMode ? 'bg-blue-50/80 border-blue-200/80 text-blue-900' : 'bg-blue-500/10 border-blue-500/20 text-blue-300'
-                }`}>
+                <div className="rounded-2xl p-4 mb-4 shrink-0 border bg-blue-500/10 border-blue-500/20 text-blue-300 [.light-theme_&]:!bg-blue-50/80 [.light-theme_&]:!border-blue-200/80 [.light-theme_&]:!text-blue-900">
                   <div className="flex items-center gap-2 text-xs sm:text-sm font-bold mb-1.5">
                     <Folder className="w-4 h-4 text-blue-500 shrink-0" />
                     <span>检测到同名角色卡，已自动归入已有分类：</span>
@@ -1774,12 +1978,22 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                   </p>
                   <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
                     {autoCategorizedSummary.map((item, idx) => (
-                      <div key={idx} className={`flex items-center justify-between text-xs sm:text-sm p-3 rounded-xl border ${
-                        isLightMode ? 'bg-[#f8fafc] border-[#f1f5f9] text-slate-800' : 'bg-black/30 border-white/10 text-white'
-                      }`}>
+                      <div key={idx} className="flex items-center justify-between text-xs sm:text-sm p-3 rounded-xl border bg-black/30 border-white/10 text-white [.light-theme_&]:!bg-[#ffffff] [.light-theme_&]:!border-[#e2e8f0] [.light-theme_&]:!text-[#0f172a]">
                         <div className="min-w-0 flex-1 mr-2">
-                          <span className="font-semibold truncate block text-white [.light-theme_&]:!text-[#0f172a]">{item.charName}</span>
-                          <span className={`text-xs truncate block mt-0.5 ${isLightMode ? 'text-blue-600' : 'text-blue-300'}`}>📁 {item.folderPath}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold truncate block text-white [.light-theme_&]:!text-[#0f172a]">{item.charName}</span>
+                            {!item.isTool && item.breakdown && item.breakdown.totalTokens > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedTokenBreakdown({ name: item.charName, breakdown: item.breakdown! })}
+                                className="text-[10px] font-mono px-2 py-0.5 rounded-md border transition active:scale-95 shrink-0 cursor-pointer bg-white/10 border-white/15 text-white/80 hover:bg-white/20 [.light-theme_&]:!bg-[#f1f5f9] [.light-theme_&]:!border-[#e2e8f0] [.light-theme_&]:!text-[#334155] [.light-theme_&]:hover:!bg-[#e2e8f0]"
+                                title="点击查看 Token 详情"
+                              >
+                                <span>{formatTokenCount(item.breakdown.totalTokens)} T</span>
+                              </button>
+                            )}
+                          </div>
+                          <span className="text-xs truncate block mt-0.5 text-blue-300 [.light-theme_&]:!text-[#007aff] font-medium">📁 {item.folderPath}</span>
                         </div>
                         {onNavigateFolder && (
                           <button
@@ -1789,7 +2003,7 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                               setAutoCategorizedSummary(null);
                               onClose();
                             }}
-                            className="px-3 py-1.5 text-xs bg-blue-500/15 hover:bg-blue-500/25 text-blue-600 [.light-theme_&]:text-blue-700 rounded-lg shrink-0 font-semibold transition flex items-center gap-1"
+                            className="px-3 py-1.5 text-xs bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 rounded-xl shrink-0 font-semibold transition flex items-center gap-1 active:scale-95 cursor-pointer [.light-theme_&]:!bg-[#007aff]/10 [.light-theme_&]:hover:!bg-[#007aff]/20 [.light-theme_&]:!text-[#007aff]"
                           >
                             <span>前往文件夹</span>
                             <ArrowRight className="w-3.5 h-3.5" />
@@ -1842,6 +2056,137 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                     className="flex-1 py-3 px-3 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs sm:text-sm font-bold transition shadow-sm cursor-pointer"
                   >
                     知道了 / 完成
+                  </button>
+                </div>
+              </div>
+            ) : importTokenSummary ? (
+              <div className="py-1 flex flex-col flex-1 min-h-0 overflow-hidden">
+                {/* Success Banner */}
+                <div className="flex items-center gap-3 mb-3 shrink-0">
+                  <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-[#34C759]/15 border border-[#34C759]/30 flex items-center justify-center shrink-0">
+                    <Check className="w-5 h-5 text-[#34C759] stroke-[2.5]" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-bold text-base sm:text-lg text-slate-100 [.light-theme_&]:!text-[#0f172a]">
+                        导入成功
+                      </h3>
+                      <span className="px-2.5 py-1 rounded-full border text-xs font-mono font-bold flex items-center gap-1.5 shadow-2xs bg-slate-800 border-slate-700 text-slate-100 [.light-theme_&]:!bg-[#f1f5f9] [.light-theme_&]:!border-[#e2e8f0] [.light-theme_&]:!text-[#0f172a]">
+                        <FileText className="w-3.5 h-3.5 text-slate-400 [.light-theme_&]:!text-[#0f172a]" />
+                        <span>总计 {formatTokenCount(importTokenSummary.totalTokens)} T</span>
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-100/60 [.light-theme_&]:!text-slate-500 mt-0.5">
+                      共成功导入 {importTokenSummary.items.length} 项卡片/数据，以下为归类与存储信息：
+                    </p>
+                  </div>
+                </div>
+
+                {/* Search Bar if multiple cards */}
+                {importTokenSummary.items.length > 3 && (
+                  <div className="mb-2.5 shrink-0 relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-white/40 [.light-theme_&]:!text-[#64748b]" />
+                    <input
+                      type="text"
+                      value={tokenSearchQuery}
+                      onChange={(e) => setTokenSearchQuery(e.target.value)}
+                      placeholder="搜索本次导入卡片..."
+                      className="w-full pl-8 pr-3 py-2 rounded-xl text-xs outline-none border transition bg-white/5 border-white/10 text-white focus:border-blue-500/50 [.light-theme_&]:!bg-[#f8fafc] [.light-theme_&]:!border-[#e2e8f0] [.light-theme_&]:!text-[#0f172a] [.light-theme_&]:placeholder:!text-[#94a3b8] [.light-theme_&]:focus:!border-[#007aff]"
+                    />
+                  </div>
+                )}
+
+                {/* Cards List */}
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar min-h-0">
+                  {importTokenSummary.items
+                    .filter((c) =>
+                      !tokenSearchQuery.trim() ||
+                      c.charName.toLowerCase().includes(tokenSearchQuery.toLowerCase()) ||
+                      c.folderPath.toLowerCase().includes(tokenSearchQuery.toLowerCase())
+                    )
+                    .map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between gap-3 p-3 rounded-2xl border transition bg-white/5 border-white/10 hover:bg-white/8 [.light-theme_&]:!bg-[#ffffff] [.light-theme_&]:!border-[#e2e8f0] [.light-theme_&]:hover:!bg-[#f8fafc]"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <div className="w-10 h-10 rounded-xl overflow-hidden bg-white/10 shrink-0 relative border border-white/10 [.light-theme_&]:!border-[#e2e8f0]">
+                            {item.avatarBlob ? (
+                              <img
+                                src={URL.createObjectURL(item.avatarBlob)}
+                                alt={item.charName}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <img
+                                src={item.avatarUrlFallback || getFallbackAvatar(item.charName)}
+                                alt={item.charName}
+                                className="w-full h-full object-cover"
+                              />
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="font-semibold text-xs sm:text-sm truncate text-white [.light-theme_&]:!text-[#0f172a] flex items-center gap-2">
+                              <span className="truncate">{item.charName}</span>
+                              {!item.isTool && item.breakdown && item.breakdown.totalTokens > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSelectedTokenBreakdown({
+                                      name: item.charName,
+                                      breakdown: item.breakdown,
+                                    })
+                                  }
+                                  className="text-[10px] font-mono px-2 py-0.5 rounded-md border shrink-0 transition active:scale-95 cursor-pointer bg-white/10 border-white/15 text-white/80 hover:bg-white/20 [.light-theme_&]:!bg-[#f1f5f9] [.light-theme_&]:!border-[#e2e8f0] [.light-theme_&]:!text-[#334155] [.light-theme_&]:hover:!bg-[#e2e8f0]"
+                                  title="点击查看 Token 详细拆解"
+                                >
+                                  {formatTokenCount(item.breakdown.totalTokens)} T
+                                </button>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 text-[11px] text-white/50 [.light-theme_&]:!text-[#64748b] mt-0.5 truncate">
+                              <span className="font-medium text-blue-400 [.light-theme_&]:!text-[#007aff] truncate">📁 {item.folderPath}</span>
+                              {item.breakdown.totalCharCount > 0 && (
+                                <span>· {item.breakdown.totalCharCount}字</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Actions: Navigate Folder if any */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {onNavigateFolder && item.folderId && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onNavigateFolder(item.folderId!);
+                                setImportTokenSummary(null);
+                                onClose();
+                              }}
+                              className="px-3.5 py-1.5 text-xs bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 rounded-xl shrink-0 font-semibold transition flex items-center gap-1 active:scale-95 cursor-pointer [.light-theme_&]:!bg-[#007aff]/10 [.light-theme_&]:hover:!bg-[#007aff]/20 [.light-theme_&]:!text-[#007aff]"
+                              title="前往目标文件夹"
+                            >
+                              <span>前往文件夹</span>
+                              <ArrowRight className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+
+                {/* Footer Buttons */}
+                <div className="flex gap-2.5 mt-3 pt-2.5 border-t border-white/10 [.light-theme_&]:!border-[#e2e8f0] shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportTokenSummary(null);
+                      setAutoCategorizedSummary(null);
+                      onClose();
+                    }}
+                    className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs sm:text-sm font-bold transition shadow-md shadow-blue-500/20 cursor-pointer text-center [.light-theme_&]:!bg-[#007aff] [.light-theme_&]:hover:!bg-[#0062cc] [.light-theme_&]:!text-white"
+                  >
+                    完成并进入卡库
                   </button>
                 </div>
               </div>
@@ -2044,39 +2389,54 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                 </div>
               );
             })() : importErrors.length > 0 ? (
-              <div className="py-4 flex flex-col max-h-[60vh]">
-                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex-1 overflow-y-auto">
-                  <div className="flex items-center gap-2 text-red-400 mb-3 sticky top-0 bg-slate-900/90 backdrop-blur-sm py-1">
-                    <AlertCircle className="w-5 h-5" />
-                    <h3 className="font-bold">
-                      部分文件导入失败 ({importErrors.length})
+              <div className="py-3 flex flex-col flex-1 min-h-0">
+                <div className="bg-red-500/10 border border-red-500/20 [.light-theme_&]:!bg-red-50 [.light-theme_&]:!border-red-200 rounded-2xl p-4 flex-1 overflow-y-auto custom-scrollbar">
+                  <div className="flex items-center gap-2 text-red-400 [.light-theme_&]:!text-red-600 mb-3 sticky top-0 py-1 font-bold text-sm sm:text-base">
+                    <AlertCircle className="w-5 h-5 shrink-0" />
+                    <h3>
+                      文件解析提示 ({importErrors.length} 个文件无法作为角色卡解析)
                     </h3>
                   </div>
-                  <ul className="space-y-2 text-sm text-red-300/80">
+                  <p className="text-xs text-red-300/80 [.light-theme_&]:!text-red-700/80 mb-3 leading-relaxed">
+                    未能在以下文件中读取到标准的 Tavern / 酒馆角色卡元数据。如果是常规图片或非角色卡文件，系统已为您过滤：
+                  </p>
+                  <ul className="space-y-2 text-xs sm:text-sm">
                     {importErrors.map((err, i) => (
                       <li
                         key={i}
-                        className="flex flex-col bg-black/20 p-2 rounded"
+                        className="flex flex-col bg-black/20 border border-white/5 [.light-theme_&]:!bg-white [.light-theme_&]:!border-red-100 p-2.5 rounded-xl"
                       >
-                        <span className="font-medium text-red-300 truncate">
+                        <span className="font-semibold text-red-300 [.light-theme_&]:!text-red-800 truncate">
                           {err.file}
                         </span>
-                        <span className="text-xs opacity-80 mt-0.5">
+                        <span className="text-xs text-red-200/70 [.light-theme_&]:!text-red-600/80 mt-0.5">
                           {err.error}
                         </span>
                       </li>
                     ))}
                   </ul>
                 </div>
-                <button
-                  onClick={() => {
-                    setImportErrors([]);
-                    onClose();
-                  }}
-                  className="w-full mt-4 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-medium transition"
-                >
-                  关闭
-                </button>
+                <div className="flex gap-2.5 mt-3 pt-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportErrors([]);
+                    }}
+                    className="flex-1 py-3 px-4 bg-white/10 hover:bg-white/15 text-white/90 rounded-2xl text-xs sm:text-sm font-semibold transition cursor-pointer [.light-theme_&]:!bg-[#f1f5f9] [.light-theme_&]:hover:!bg-[#e2e8f0] [.light-theme_&]:!text-[#0f172a] [.light-theme_&]:!border [.light-theme_&]:!border-[#e2e8f0]"
+                  >
+                    重新选择文件
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportErrors([]);
+                      onClose();
+                    }}
+                    className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs sm:text-sm font-bold transition cursor-pointer"
+                  >
+                    知道了 / 关闭
+                  </button>
+                </div>
               </div>
             ) : progress ? (
               <div className="py-4 sm:py-6 flex flex-col items-center justify-center text-center">
@@ -2164,8 +2524,8 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                   </div>
                 </div>
 
-  {isAndroid() && (
-                  <div className="mt-4 w-full flex justify-center">
+                {isAndroid() && (
+                <div className="mt-4 w-full flex justify-center">
                     <button 
                       onClick={(e) => { e.stopPropagation(); fetchTavernList(); }}
                       disabled={isPulling}
@@ -2175,7 +2535,7 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
                       <span className="truncate">拉取酒馆卡片</span>
                     </button>
                   </div>
-  )}
+                  )}
 
                 {error && (
                   <motion.div
@@ -2196,13 +2556,28 @@ export function ImportModal({ isOpen, onClose, onImported, onNavigateFolder, fol
             <input
               type="file"
               ref={fileInputRef}
-              onChange={(e) => e.target.files && handleFiles(e.target.files)}
-              accept=".png,.jpg,.jpeg,.webp,.gif,.json,.jsonl,.txt,.js,.zip,application/json,application/zip,application/x-zip-compressed,text/plain,text/javascript"
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                  handleFiles(e.target.files);
+                }
+                e.target.value = "";
+              }}
+              accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.json,.jsonl,.txt,.js,.zip,application/json,application/zip,application/x-zip-compressed,text/plain,text/javascript,*/*"
               className="hidden"
               multiple
             />
           </motion.div>
         </>
+      )}
+
+      {selectedTokenBreakdown && (
+        <TokenBreakdownModal
+          isOpen={!!selectedTokenBreakdown}
+          onClose={() => setSelectedTokenBreakdown(null)}
+          charName={selectedTokenBreakdown.name}
+          breakdown={selectedTokenBreakdown.breakdown}
+          isLightMode={isLightMode}
+        />
       )}
     </AnimatePresence>
   );
