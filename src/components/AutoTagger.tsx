@@ -324,15 +324,17 @@ export function AutoTagger({ onClose, onOpenSettings }: { onClose: () => void, o
   return (
     <div className="flex flex-col h-full bg-[#0a0a0c] text-white [.light-theme_&]:!bg-[#f0f2f5] [.light-theme_&]:!text-[#0f172a] miu-skin select-none">
       <header className="sticky top-0 px-3.5 pb-0 pt-[max(1.75rem,env(safe-area-inset-top))] sm:px-6 sm:pt-[max(1.75rem,env(safe-area-inset-top))] flex flex-col gap-3 sm:gap-4 bg-slate-900/90 backdrop-blur-xl border-b border-white/10 z-20 [.light-theme_&]:!bg-[#ffffff]/95 [.light-theme_&]:!border-[#e2e8f0] shadow-2xs">
-        <div className="flex items-center gap-3 sm:gap-4">
-          <button onClick={onClose} className="p-2 -ml-2 rounded-full transition text-white/80 hover:text-white hover:bg-white/10 [.light-theme_&]:!text-[#0f172a] [.light-theme_&]:!bg-transparent [.light-theme_&]:hover:!bg-black/5 [.light-theme_&]:active:!bg-black/10 cursor-pointer">
-            <ArrowLeft className="w-5 sm:w-6 h-5 sm:h-6" />
-          </button>
-          <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl font-bold text-white [.light-theme_&]:!text-[#0f172a] truncate">
-              批量自动打标
-            </h1>
-            <p className="text-xs sm:text-sm text-white/50 mt-0.5 sm:mt-1 truncate [.light-theme_&]:!text-[#64748b]">使用 AI 自动识别角色设定并生成标签 (支持后台运行)</p>
+        <div className="flex items-center justify-between gap-3 sm:gap-4">
+          <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+            <button onClick={onClose} className="p-2 -ml-2 rounded-full transition text-white/80 hover:text-white hover:bg-white/10 [.light-theme_&]:!text-[#0f172a] [.light-theme_&]:!bg-transparent [.light-theme_&]:hover:!bg-black/5 [.light-theme_&]:active:!bg-black/10 cursor-pointer" title="返回">
+              <ArrowLeft className="w-5 sm:w-6 h-5 sm:h-6" />
+            </button>
+            <div className="min-w-0">
+              <h1 className="text-xl sm:text-2xl font-bold text-white [.light-theme_&]:!text-[#0f172a] truncate">
+                批量自动打标
+              </h1>
+              <p className="text-xs sm:text-sm text-white/50 mt-0.5 sm:mt-1 truncate [.light-theme_&]:!text-[#64748b]">使用 AI 自动识别角色设定并生成标签 (支持后台运行)</p>
+            </div>
           </div>
         </div>
         

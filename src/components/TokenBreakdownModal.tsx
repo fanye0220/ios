@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, MessageSquare, BookOpen, Layers, Sparkles, FileText, Eye, EyeOff } from "lucide-react";
+import { X, Eye, EyeOff } from "lucide-react";
 import { CharacterTokenBreakdown, formatTokenCount } from "../lib/tokens";
 
 interface TokenBreakdownModalProps {
@@ -79,60 +79,73 @@ export function TokenBreakdownModal({
   const total = Math.max(1, breakdown.totalTokens);
   const getPercent = (val: number) => Math.round((val / total) * 100);
 
+  // WPS 经典三原色及套件标准配色体系：
+  // 1. WPS 文字 (Word) 经典蓝: #2065D9
+  // 2. WPS 表格 (Excel) 经典绿: #0FB36C
+  // 3. WPS 演示 (PPT) 经典暖橙: #FF7700
+  // 4. WPS 脑图/思维导图 智汇紫: #722ED1
+  // 5. WPS 协作/流程图 协作青: #00B4D8
+  // 6. WPS PDF/核心指令 经典朱红: #F53F3F
   const sections = [
     {
       title: "人设与基础设定",
+      shortTitle: "人设设定",
       tokens: breakdown.description + breakdown.personality,
       chars: breakdown.descriptionChars + breakdown.personalityChars,
-      color: "bg-blue-500",
+      color: "bg-[#2065D9]",
+      dotColor: "bg-[#2065D9]",
       desc: "包含角色的外貌背景、性格语气、行为机制等常驻人设信息",
-      icon: Sparkles,
     },
     {
       title: breakdown.alternateGreetingsCount > 0
         ? `开场白统计 (${breakdown.alternateGreetingsCount + 1} 条)`
         : "开场白统计",
+      shortTitle: "开场白",
       tokens: breakdown.firstMessage + breakdown.alternateGreetings,
       chars: breakdown.firstMessageChars + (breakdown.alternateGreetingsChars || 0),
-      color: "bg-amber-500",
+      color: "bg-[#0FB36C]",
+      dotColor: "bg-[#0FB36C]",
       desc: breakdown.alternateGreetingsCount > 0
         ? `首条开场白 (${breakdown.firstMessage} T) + ${breakdown.alternateGreetingsCount} 条备用问候语 (${breakdown.alternateGreetings} T)`
         : "开启对话时角色的初始开场问候消息",
-      icon: MessageSquare,
     },
     {
       title: breakdown.worldbookEntriesCount > 0
         ? `嵌入世界书 (${breakdown.worldbookEntriesCount} 个条目)`
         : "嵌入世界书",
+      shortTitle: "世界书",
       tokens: breakdown.worldbook,
       chars: breakdown.worldbookChars || 0,
-      color: "bg-indigo-500",
+      color: "bg-[#FF7700]",
+      dotColor: "bg-[#FF7700]",
       desc: "卡片内置词条集，命中关键词时按需动态激活插入",
-      icon: BookOpen,
     },
     {
       title: "对话场景 (Scenario)",
+      shortTitle: "场景设定",
       tokens: breakdown.scenario,
       chars: breakdown.scenarioChars,
-      color: "bg-emerald-500",
+      color: "bg-[#722ED1]",
+      dotColor: "bg-[#722ED1]",
       desc: "初始环境背景或开局特定场景设定",
-      icon: Layers,
     },
     {
       title: "示例对话 (Examples)",
+      shortTitle: "示例对话",
       tokens: breakdown.mesExample,
       chars: breakdown.mesExampleChars,
-      color: "bg-cyan-500",
+      color: "bg-[#00B4D8]",
+      dotColor: "bg-[#00B4D8]",
       desc: "示范语气及交互规范的对话样例",
-      icon: FileText,
     },
     {
       title: "系统指令 (System Prompt)",
+      shortTitle: "系统指令",
       tokens: breakdown.systemPrompt + breakdown.postHistoryInstructions,
       chars: breakdown.systemPromptChars,
-      color: "bg-rose-500",
+      color: "bg-[#F53F3F]",
+      dotColor: "bg-[#F53F3F]",
       desc: "卡片内置的系统提示词或深度指导指令",
-      icon: Layers,
     },
   ].filter((sec) => sec.tokens > 0 || sec.chars > 0);
 
@@ -157,7 +170,7 @@ export function TokenBreakdownModal({
           exit={{ opacity: 0, scale: 0.95, y: 10 }}
           className={`relative w-full max-w-lg max-h-[85vh] rounded-3xl flex flex-col shadow-2xl overflow-hidden border backdrop-blur-2xl transition-colors ${
             isLightMode
-              ? "bg-white border-[#e2ecf9] text-slate-900"
+              ? "light-theme bg-white border-[#e2ecf9] text-slate-900"
               : "bg-slate-900/95 border-white/10 text-slate-100"
           }`}
         >
@@ -169,7 +182,7 @@ export function TokenBreakdownModal({
               <h3 className="font-bold text-base sm:text-lg truncate detail-card-text">
                 Token 占用分析
               </h3>
-              <p className="text-xs truncate mt-0.5 detail-card-text-muted">
+              <p className="text-xs detail-card-text-muted truncate mt-0.5">
                 {charName}
               </p>
             </div>
@@ -181,14 +194,14 @@ export function TokenBreakdownModal({
                 className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 cursor-pointer border ${
                   showMainTokens
                     ? "bg-[#007aff]/10 border-[#007aff]/30 text-[#007aff] [.light-theme_&]:!bg-[#007aff]/10 [.light-theme_&]:!border-[#007aff]/30 [.light-theme_&]:!text-[#007aff] shadow-2xs"
-                    : "bg-white/10 border-white/15 text-white/60 [.light-theme_&]:!bg-[#f1f5f9] [.light-theme_&]:!border-[#e2e8f0] [.light-theme_&]:!text-slate-500"
+                    : "bg-white/10 border-white/15 text-white/60 [.light-theme_&]:!bg-[#f1f5f9] [.light-theme_&]:!border-[#e2e8f0] [.light-theme_&]:!text-[#64748b]"
                 }`}
                 title={showMainTokens ? "主页角色卡正在显示字符/Token (点击隐藏)" : "主页角色卡已隐藏字符/Token (点击显示)"}
               >
                 {showMainTokens ? (
                   <Eye className="w-3.5 h-3.5 shrink-0 text-[#007aff] stroke-[2.2]" />
                 ) : (
-                  <EyeOff className="w-3.5 h-3.5 shrink-0 text-white/50 [.light-theme_&]:!text-slate-400" />
+                  <EyeOff className="w-3.5 h-3.5 shrink-0 text-white/50 [.light-theme_&]:!text-[#64748b]" />
                 )}
                 <span className="text-[11px] sm:text-xs font-medium">
                   {showMainTokens ? "主页字符: 显示" : "主页字符: 隐藏"}
@@ -248,24 +261,35 @@ export function TokenBreakdownModal({
               </div>
             </div>
 
-            {/* Visual Token Distribution Bar */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs font-medium detail-card-text-muted">
-                <span>字段空间占用比率</span>
-                <span className="font-mono text-[11px] font-bold text-slate-700 dark:text-slate-200">
-                  {breakdown.totalTokens.toLocaleString()} Tokens
-                </span>
+            {/* Visual Token Distribution Section - WPS 风格比例条 */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between text-xs font-medium">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold text-xs sm:text-sm detail-card-text">
+                    字段空间占用比率
+                  </span>
+                  <span className="font-mono text-[11px] font-medium detail-card-text-muted">
+                    · {breakdown.totalTokens.toLocaleString()} Tokens
+                  </span>
+                </div>
               </div>
-              <div className="w-full h-3 rounded-full overflow-hidden flex p-0.5 gap-1 bg-slate-100/90 border border-slate-200/80 dark:bg-slate-800/80 dark:border-white/10 shadow-inner">
+
+              {/* WPS 风格无缝比例条 */}
+              <div className={`w-full h-3 sm:h-3.5 rounded-full overflow-hidden flex transition-colors shadow-2xs ${
+                isLightMode
+                  ? "bg-[#edf2f7] border border-[#d8e2ee]"
+                  : "bg-white/10 border border-white/10"
+              }`}>
                 {sections.map((s, idx) => {
-                  const pct = getPercent(s.tokens);
-                  if (pct <= 0) return null;
+                  const widthPct = (s.tokens / total) * 100;
+                  if (widthPct <= 0) return null;
+                  const displayPct = getPercent(s.tokens);
                   return (
                     <div
                       key={idx}
-                      style={{ width: `${Math.max(2, pct)}%` }}
-                      className={`h-full rounded-full ${s.color} transition-all duration-300 shadow-2xs`}
-                      title={`${s.title}: ${s.tokens.toLocaleString()} T (${pct}%)`}
+                      style={{ width: `${widthPct}%` }}
+                      className={`h-full ${s.color} transition-all duration-300 relative group cursor-pointer hover:brightness-110 border-r border-white/40 last:border-r-0 [.light-theme_&]:border-white/50`}
+                      title={`${s.title}: ${s.tokens.toLocaleString()} T (${displayPct}%)`}
                     />
                   );
                 })}
@@ -279,7 +303,6 @@ export function TokenBreakdownModal({
               </h4>
               <div className="space-y-2">
                 {sections.map((sec, idx) => {
-                  const IconComp = sec.icon;
                   return (
                     <div
                       key={idx}
@@ -287,7 +310,7 @@ export function TokenBreakdownModal({
                     >
                       <div className="flex items-center justify-between gap-2 mb-1">
                         <div className="flex items-center gap-2 min-w-0">
-                          <IconComp className="w-3.5 h-3.5 shrink-0 detail-card-text-muted" />
+                          <span className={`w-2.5 h-2.5 rounded-full ${sec.dotColor} shrink-0`} />
                           <span className="font-semibold text-xs sm:text-sm truncate detail-card-text">
                             {sec.title}
                           </span>
@@ -295,17 +318,17 @@ export function TokenBreakdownModal({
                         <div className="flex items-center gap-1.5 shrink-0 font-mono">
                           <span className={`text-xs font-semibold px-2 py-0.5 rounded-md border ${
                             isLightMode
-                              ? "bg-stone-100 border-stone-200 text-stone-800"
+                              ? "bg-[#f1f5f9] border-[#e2e8f0] text-[#0f172a]"
                               : "bg-white/10 border-white/15 text-white/90"
                           }`}>
                             {sec.tokens.toLocaleString()} T
                           </span>
-                          <span className="text-[11px] detail-card-text-muted">
+                          <span className="text-[11px] detail-card-text-muted font-bold">
                             ({getPercent(sec.tokens)}%)
                           </span>
                         </div>
                       </div>
-                      <p className="text-[11px] leading-relaxed detail-card-text-muted">
+                      <p className="text-[11px] leading-relaxed detail-card-text-muted pl-4.5">
                         {sec.desc}
                         {sec.chars > 0 && ` · 约 ${sec.chars.toLocaleString()} 字符`}
                       </p>

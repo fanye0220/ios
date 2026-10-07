@@ -1943,7 +1943,7 @@ export function CharacterList({
   const handleBatchCloudBackup = async () => {
     if (selectedIds.size === 0) return;
 
-    const { getAccessToken } = await import("../lib/drive");
+    const { getAccessToken, updateSyncState } = await import("../lib/drive");
     const token = await getAccessToken();
     if (!token) {
       alert("请先前往「云端同步」页面登录 Google 账号。");
@@ -1988,10 +1988,12 @@ export function CharacterList({
       const CONCURRENCY = Capacitor.isNativePlatform() ? 3 : 5;
       let currentIndex = 0;
 
-      setProgress({
-        current: 0,
-        total: charsArray.length,
-        message: `正在准备批量同步至云端...`,
+      updateSyncState({
+        isActive: true,
+        taskName: '批量同步',
+        message: `准备上传 ${charsArray.length} 个角色...`,
+        isError: false,
+        completed: false,
       });
 
       const uploadWorker = async () => {
@@ -2006,10 +2008,10 @@ export function CharacterList({
             console.error("Upload failed for char:", charsArray[i], e);
           } finally {
             completed++;
-            setProgress({
-              current: completed,
-              total: charsArray.length,
-              message: `正在批量同步至云端...`,
+            updateSyncState({
+              isActive: true,
+              taskName: '批量同步',
+              message: `正在同步至云端 (${completed}/${charsArray.length})...`,
             });
             await new Promise(r => setTimeout(r, Capacitor.isNativePlatform() ? 200 : 50));
           }
@@ -2022,11 +2024,21 @@ export function CharacterList({
       }
       await Promise.all(workers);
 
-      setProgress(null);
+      updateSyncState({
+        isActive: false,
+        completed: true,
+        taskName: '批量同步',
+        message: `同步完成！新增 ${success}，移动 ${moved}${skipped > 0 ? `，跳过 ${skipped}` : ''}`,
+      });
       alert(`云端同步完成！\n新上传: ${success} 个\n同步文件夹嵌套: ${moved} 个${skipped > 0 ? `\n分类未变已跳过: ${skipped} 个` : ''}`);
     } catch (err: any) {
       console.error(err);
-      setProgress(null);
+      updateSyncState({
+        isActive: false,
+        isError: true,
+        taskName: '批量同步',
+        message: `同步失败: ${err.message}`,
+      });
       alert("备份失败: " + err.message);
     }
   };
@@ -3512,10 +3524,12 @@ export function CharacterList({
               <button
                 onClick={handleBatchDelete}
                 disabled={selectedIds.size === 0}
-                className="floating-pill-item flex flex-col items-center justify-center gap-0.5 px-3 py-1.5 rounded-full transition active:scale-90 shrink-0 hover:!text-rose-500 disabled:opacity-30 disabled:pointer-events-none"
+                className="floating-pill-item is-danger flex flex-col items-center justify-center gap-0.5 px-3 py-1.5 rounded-full transition active:scale-90 shrink-0 cursor-pointer disabled:opacity-30 disabled:pointer-events-none"
               >
                 <Trash2 className="w-5 h-5 stroke-[1.8]" />
-                <span className="font-medium text-[10px] leading-none tracking-tight">删除</span>
+                <span className="font-medium text-[10px] leading-none tracking-tight whitespace-nowrap">
+                  删除{selectedIds.size > 0 ? `(${selectedIds.size})` : ''}
+                </span>
               </button>
             </div>
           </motion.div>
@@ -3529,29 +3543,16 @@ export function CharacterList({
             animate={{ opacity: 1, y: 0, x: '-50%', scale: 1 }}
             exit={{ opacity: 0, y: -20, x: '-50%', scale: 0.95 }}
             transition={{ type: "spring", stiffness: 400, damping: 30 }}
-            className={`fixed top-5 left-1/2 z-[200] backdrop-blur-xl border rounded-full px-4 py-2 sm:px-5 sm:py-2.5 flex items-center gap-3 max-w-[92vw] w-auto pointer-events-auto overflow-hidden select-none ${
-              isLightMode
-                ? 'bg-white/95 border-blue-100 shadow-[0_12px_36px_rgba(0,0,0,0.08)]'
-                : 'bg-slate-900/90 border-white/15 shadow-[0_12px_36px_rgba(0,0,0,0.3)]'
-            }`}
+            style={{ top: 'max(1.25rem, calc(env(safe-area-inset-top, 0px) + 0.5rem))' }}
+            className="tagger-floating-pill fixed left-1/2 z-[600] rounded-full px-4 py-2 sm:px-4.5 sm:py-2.5 flex items-center gap-2.5 max-w-[92vw] w-auto pointer-events-auto transition-all overflow-hidden select-none shadow-2xl"
           >
-            <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${isLightMode ? 'bg-blue-50' : 'bg-blue-500/20'}`}>
-              <Loader2 className={`w-3.5 h-3.5 animate-spin shrink-0 ${isLightMode ? 'text-blue-600' : 'text-blue-400'}`} />
-            </div>
-            <span className={`text-xs sm:text-sm font-medium whitespace-nowrap ${isLightMode ? 'text-[#0f172a]' : 'text-slate-100'}`}>
+            <Loader2 className="w-4 h-4 animate-spin shrink-0 text-blue-400 [.light-theme_&]:!text-blue-600" />
+            <span className="text-xs sm:text-sm font-medium text-slate-100 whitespace-nowrap tagger-floating-text [.light-theme_&]:!text-[#0f172a] truncate">
               {progress.message || '正在处理'}
             </span>
-            <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full shrink-0 tabular-nums ${
-              isLightMode ? 'text-blue-700 bg-blue-100' : 'text-blue-300 bg-blue-500/20'
-            }`}>
-              {progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0}%
+            <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full shrink-0 border-0 border-none outline-none text-blue-300 bg-blue-500/20 [.light-theme_&]:!text-blue-600 [.light-theme_&]:!bg-blue-50 tabular-nums">
+              {progress.total > 0 ? (progress.total > 1 ? `${progress.current}/${progress.total}` : `${Math.round((progress.current / progress.total) * 100)}%`) : `${progress.current || 0}`}
             </span>
-            <div className={`absolute bottom-0 left-0 right-0 h-[2.5px] overflow-hidden ${isLightMode ? 'bg-slate-200' : 'bg-black/30'}`}>
-              <div 
-                className="h-full bg-gradient-to-r from-blue-500 via-indigo-500 to-blue-500 [.light-theme_&]:!from-blue-600 [.light-theme_&]:!to-blue-600 transition-all duration-300"
-                style={{ width: `${progress.total > 0 ? (progress.current / progress.total) * 100 : 0}%` }}
-              />
-            </div>
           </motion.div>
         )}
       </AnimatePresence>
