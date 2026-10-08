@@ -56,7 +56,6 @@ import {
   getCachedMeta,
   getFilteredCharacterCount,
   getCharacterCategoryPrefix,
-  normalizeCardBaseName,
   invalidateCache,
 } from "../lib/db";
 import { useInView } from "../lib/useInView";
@@ -531,46 +530,6 @@ export function CharacterList({
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null);
   const [isCropping, setIsCropping] = useState(false);
   const [coverPickerFolder, setCoverPickerFolder] = useState<Folder | null>(null);
-
-  // 智能多版本识别：当主页面存在同一角色的不同版本卡片时，识别其主版本与副版本关系
-  const versionRoleMap = useMemo(() => {
-    const map = new Map<string, 'main' | 'deputy'>();
-    const nameBuckets = new Map<string, CharacterCard[]>();
-
-    for (const c of characters) {
-      if (c.deletedAt || c.isTool || c.isQR) continue;
-      const baseName = normalizeCardBaseName(c.name || c.id).toLowerCase();
-      if (!baseName) continue;
-      const list = nameBuckets.get(baseName) || [];
-      list.push(c);
-      nameBuckets.set(baseName, list);
-    }
-
-    nameBuckets.forEach(group => {
-      if (group.length > 1) {
-        const sorted = [...group].sort((a, b) => {
-          const aHasHistory = (a.versionHistory && a.versionHistory.length > 0) ? 1 : 0;
-          const bHasHistory = (b.versionHistory && b.versionHistory.length > 0) ? 1 : 0;
-          if (bHasHistory !== aHasHistory) return bHasHistory - aHasHistory;
-
-          const aLen = (a.tokenCount || 0) || ((a.data?.data?.description || a.data?.description || '').length);
-          const bLen = (b.tokenCount || 0) || ((b.data?.data?.description || b.data?.description || '').length);
-          if (bLen !== aLen) return bLen - aLen;
-
-          return (b.createdAt || 0) - (a.createdAt || 0);
-        });
-
-        map.set(sorted[0].id, 'main');
-        for (let i = 1; i < sorted.length; i++) {
-          map.set(sorted[i].id, 'deputy');
-        }
-      } else if (group.length === 1 && group[0].versionHistory && group[0].versionHistory.length > 0) {
-        map.set(group[0].id, 'main');
-      }
-    });
-
-    return map;
-  }, [characters]);
 
   const getCroppedImgBlob = async (
     imageSrc: string,
@@ -3214,7 +3173,6 @@ export function CharacterList({
                         isSelected={selectedIds.has(char.id)}
                         viewMode={viewMode}
                         showMainTokens={showMainTokens}
-                        versionRole={versionRoleMap.get(char.id)}
                         onClick={() => {
                           if (selectionMode) toggleSelection(char.id);
                           else onSelect(char.id);
@@ -3255,7 +3213,6 @@ export function CharacterList({
                         isSelected={selectedIds.has(char.id)}
                         viewMode={viewMode}
                         showMainTokens={showMainTokens}
-                        versionRole={versionRoleMap.get(char.id)}
                         onClick={() => {
                           if (selectionMode) toggleSelection(char.id);
                           else onSelect(char.id);
@@ -3391,7 +3348,7 @@ export function CharacterList({
 
       <AnimatePresence>
         {!selectionMode ? (
-          <div className="fixed bottom-20 right-6 sm:right-8 z-40 flex flex-col items-center gap-2.5">
+          <div className="fixed bottom-24 sm:bottom-28 right-6 sm:right-8 z-40 flex flex-col items-center gap-2.5">
             {/* 1. 一键回顶 (半透明毛玻璃小球，触发滚动时显示在最上方) */}
             <AnimatePresence>
               {showScrollTop && (
@@ -3802,7 +3759,6 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
   isSelected,
   viewMode,
   showMainTokens = true,
-  versionRole,
 }: {
   key?: React.Key;
   char: CharacterCard;
@@ -3814,7 +3770,6 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
   isSelected: boolean;
   viewMode: "grid" | "list" | "masonry";
   showMainTokens?: boolean;
-  versionRole?: 'main' | 'deputy' | null;
 }) {
   const defaultFallback = getFallbackAvatar(char.name || char.id, char.tags?.join(',') || (char.isTool ? 'tool' : undefined));
   const initialUrl = resolveAvatarUrl(char.avatarUrlFallback, char.name || char.id, char.tags?.join(',') || (char.isTool ? 'tool' : undefined));
@@ -4045,18 +4000,6 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
                 <span>{badgeInfo.label}</span>
               </span>
             )}
-            {!badgeInfo && versionRole === 'main' && (
-              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 [.light-theme_&]:!bg-emerald-50 [.light-theme_&]:!text-emerald-700 px-1.5 py-0.5 rounded-md flex-shrink-0 flex items-center gap-1 font-bold select-none border border-emerald-500/30 [.light-theme_&]:!border-emerald-200">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                <span>主版本</span>
-              </span>
-            )}
-            {!badgeInfo && versionRole === 'deputy' && (
-              <span className="text-[10px] bg-amber-500/20 text-amber-300 [.light-theme_&]:!bg-amber-100 [.light-theme_&]:!text-amber-800 px-1.5 py-0.5 rounded-md flex-shrink-0 flex items-center gap-1 font-bold select-none border border-amber-500/30 [.light-theme_&]:!border-amber-200">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-                <span>副版本</span>
-              </span>
-            )}
             {showMainTokens && !badgeInfo && char.tokenCount !== undefined && char.tokenCount > 0 && (
               <button
                 type="button"
@@ -4104,13 +4047,13 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
               e.stopPropagation();
               onToggleFavorite(e);
             }}
-            className="p-2 rounded-full hover:bg-white/10 [.light-theme_&]:hover:bg-black/5 transition relative group active:scale-90 cursor-pointer shrink-0 z-10"
+            className="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center hover:bg-white/10 [.light-theme_&]:hover:bg-black/5 transition relative group active:scale-90 cursor-pointer shrink-0 z-10"
             title={char.isFavorite ? "取消收藏" : "收藏"}
           >
             <Heart
-              className={`w-4.5 h-4.5 transition-all duration-200 ${
+              className={`w-4 h-4 sm:w-4.5 sm:h-4.5 transition-all duration-200 ${
                 char.isFavorite
-                  ? "text-rose-500 fill-rose-500 scale-110 drop-shadow-[0_2px_6px_rgba(244,63,94,0.4)]"
+                  ? "text-rose-500 fill-rose-500 drop-shadow-[0_1px_4px_rgba(244,63,94,0.4)]"
                   : "text-white/40 hover:text-rose-400 [.light-theme_&]:text-slate-400 [.light-theme_&]:hover:text-rose-500"
               }`}
             />
@@ -4185,69 +4128,53 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
         )}
       </div>
 
-      {badgeInfo ? (
+      {badgeInfo && (
         <div className="absolute top-2 left-2 z-10 px-2 py-0.5 bg-black/60 backdrop-blur-md rounded-md text-[10px] font-medium text-white/90 border border-white/10 flex items-center gap-1.5 shadow-sm pointer-events-none select-none">
           <span className={`w-1.5 h-1.5 rounded-full ${badgeInfo.dotColor} shrink-0`} />
           <span>{badgeInfo.label}</span>
         </div>
-      ) : versionRole === 'main' ? (
-        <div className="absolute top-2 left-2 z-10 px-2 py-0.5 bg-black/65 backdrop-blur-md rounded-md text-[10px] font-bold text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5 shadow-sm pointer-events-none select-none [.light-theme_&]:!bg-emerald-50 [.light-theme_&]:!text-emerald-700 [.light-theme_&]:!border-emerald-300">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-          <span>主版本</span>
-        </div>
-      ) : versionRole === 'deputy' ? (
-        <div className="absolute top-2 left-2 z-10 px-2 py-0.5 bg-black/65 backdrop-blur-md rounded-md text-[10px] font-bold text-amber-300 border border-amber-500/30 flex items-center gap-1.5 shadow-sm pointer-events-none select-none [.light-theme_&]:!bg-amber-50 [.light-theme_&]:!text-amber-800 [.light-theme_&]:!border-amber-300">
-          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-          <span>副版本</span>
-        </div>
-      ) : null}
+      )}
 
-      {showMainTokens && !badgeInfo && !versionRole && char.tokenCount !== undefined && char.tokenCount > 0 && (
+      {showMainTokens && !badgeInfo && char.tokenCount !== undefined && char.tokenCount > 0 && (
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
             onOpenTokenBreakdown?.(char);
           }}
-          className="absolute top-2 left-2 z-10 px-1.5 py-0.5 bg-black/60 hover:bg-black/80 backdrop-blur-md rounded-md text-[10px] font-mono font-medium text-white/90 hover:text-white border border-white/20 flex items-center shadow-xs transition cursor-pointer select-none active:scale-95"
+          className={`absolute ${badgeInfo ? "top-8.5" : "top-2"} left-2 z-10 px-1.5 py-0.5 bg-black/60 hover:bg-black/80 backdrop-blur-md rounded-md text-[10px] font-mono font-medium text-white/90 hover:text-white border border-white/20 flex items-center shadow-xs transition cursor-pointer select-none active:scale-95`}
           title={`Token 数量: ${char.tokenCount.toLocaleString()} (常驻: ${formatTokenCount(char.permanentTokens || 0)})，点击查看拆解`}
         >
           <span>{formatTokenCount(char.tokenCount)} T</span>
         </button>
       )}
 
-      {showMainTokens && (badgeInfo || versionRole) && char.tokenCount !== undefined && char.tokenCount > 0 && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpenTokenBreakdown?.(char);
-          }}
-          className="absolute top-8.5 left-2 z-10 px-1.5 py-0.5 bg-black/60 hover:bg-black/80 backdrop-blur-md rounded-md text-[10px] font-mono font-medium text-white/90 hover:text-white border border-white/20 flex items-center shadow-xs transition cursor-pointer select-none active:scale-95"
-          title={`Token 数量: ${char.tokenCount.toLocaleString()} (常驻: ${formatTokenCount(char.permanentTokens || 0)})，点击查看拆解`}
-        >
-          <span>{formatTokenCount(char.tokenCount)} T</span>
-        </button>
-      )}
-
-      {/* Top right Heart favorite button */}
+      {/* Top right Heart favorite button - differentiated by layout */}
       {!selectionMode && onToggleFavorite && (
         <button
           onClick={(e) => {
             e.stopPropagation();
             onToggleFavorite(e);
           }}
-          className={`absolute top-2 right-2 z-10 w-7 h-7 rounded-full flex items-center justify-center backdrop-blur-md transition-all duration-200 cursor-pointer active:scale-85 ${
+          className={`absolute z-10 rounded-full flex items-center justify-center backdrop-blur-xs transition-all duration-200 cursor-pointer active:scale-85 ${
+            viewMode === "masonry"
+              ? "top-1.5 right-1.5 sm:top-2.5 sm:right-2.5 w-6 h-6 sm:w-7 sm:h-7"
+              : "top-1 right-1 sm:top-2 sm:right-2 w-5 h-5 sm:w-6.5 sm:h-6.5"
+          } ${
             char.isFavorite
-              ? "bg-black/50 text-rose-500 shadow-sm opacity-100"
-              : "bg-black/35 text-white/75 hover:text-rose-400 opacity-0 group-hover:opacity-100 max-sm:opacity-85"
+              ? "bg-black/45 text-rose-500 shadow-xs opacity-100 border border-white/10"
+              : "bg-black/30 text-white/70 hover:text-rose-400 opacity-0 group-hover:opacity-100"
           }`}
           title={char.isFavorite ? "取消收藏" : "收藏"}
         >
           <Heart
-            className={`w-4 h-4 transition-transform duration-200 ${
+            className={`transition-transform duration-200 ${
+              viewMode === "masonry"
+                ? "w-3.5 h-3.5 sm:w-4 sm:h-4"
+                : "w-2.5 h-2.5 sm:w-3.5 sm:h-3.5"
+            } ${
               char.isFavorite
-                ? "fill-rose-500 text-rose-500 scale-110 drop-shadow-[0_1px_4px_rgba(244,63,94,0.5)]"
+                ? "fill-rose-500 text-rose-500 drop-shadow-[0_1px_3px_rgba(244,63,94,0.5)]"
                 : "text-white/90 hover:text-white"
             }`}
           />

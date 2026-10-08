@@ -519,6 +519,18 @@ export function ChatViewer({
   const [showBubblePicker, setShowBubblePicker] = useState(false);
   const { themeId: bubbleThemeId, theme: bubbleTheme, setTheme: setBubbleTheme, allThemes: bubbleThemes } = useBubbleTheme();
   const [showUserAvatarSheet, setShowUserAvatarSheet] = useState(false);
+
+  // 聊天记录字体大小（默认 16.5px，在手机移动端字迹清晰舒适，支持记忆与调节）
+  const [chatFontSize, setChatFontSize] = useState<number>(() => {
+    const saved = localStorage.getItem("chatViewer_fontSize");
+    return saved ? parseFloat(saved) : 16.5;
+  });
+
+  const handleSetFontSize = (size: number) => {
+    const clamped = Math.max(13, Math.min(24, Math.round(size * 2) / 2));
+    setChatFontSize(clamped);
+    localStorage.setItem("chatViewer_fontSize", String(clamped));
+  };
   const [newTagInput, setNewTagInput] = useState("");
   const userAvatarInputRef = useRef<HTMLInputElement>(null);
   const userFileInputRef = useRef<HTMLInputElement>(null);
@@ -1659,7 +1671,35 @@ export function ChatViewer({
                       exit={{ opacity: 0, scale: 0.9, y: 10 }}
                       className="chat-header-popover absolute top-full right-0 mt-3 backdrop-blur-3xl rounded-2xl shadow-2xl w-64 p-4 z-40 overflow-hidden"
                     >
-                      <div className="flex flex-col gap-4">
+                      <div className="flex flex-col gap-3.5">
+                        {/* 快捷字号微调 */}
+                        <div className="flex items-center justify-between pb-3 border-b border-white/10 [.light-theme_&]:!border-[#e2e8f0]">
+                          <span className="text-xs text-white/70 [.light-theme_&]:!text-slate-600 font-semibold select-none">
+                            字体大小
+                          </span>
+                          <div className="inline-flex items-center gap-1 select-none">
+                            <button
+                              type="button"
+                              onClick={() => handleSetFontSize(chatFontSize - 1)}
+                              className="w-6 h-6 flex items-center justify-center rounded-lg text-xs font-bold leading-none text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 active:scale-90 transition cursor-pointer [.light-theme_&]:!text-blue-600 [.light-theme_&]:hover:!bg-blue-500/10"
+                              title="缩小字号"
+                            >
+                              A-
+                            </button>
+                            <span className="min-w-[28px] text-center text-xs font-mono font-bold text-blue-400 [.light-theme_&]:!text-blue-600">
+                              {chatFontSize}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleSetFontSize(chatFontSize + 1)}
+                              className="w-6 h-6 flex items-center justify-center rounded-lg text-xs font-bold leading-none text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 active:scale-90 transition cursor-pointer [.light-theme_&]:!text-blue-600 [.light-theme_&]:hover:!bg-blue-500/10"
+                              title="放大字号"
+                            >
+                              A+
+                            </button>
+                          </div>
+                        </div>
+
                         <div className="flex flex-col gap-2 flex-1 min-h-0">
                           <label className="text-xs text-white/60 [.light-theme_&]:!text-slate-600 font-semibold shrink-0">
                             绑定角色获得正则效果
@@ -1812,13 +1852,10 @@ export function ChatViewer({
           </div>
 
           {savedChats.length === 0 ? (
-            <div className="py-20 flex flex-col items-center justify-center border-2 border-dashed border-white/10 rounded-3xl [.light-theme_&]:!border-[#cbd5e1] [.light-theme_&]:!bg-white/60">
-              <FileJson className="w-16 h-16 text-white/20 mb-4 mx-auto [.light-theme_&]:!text-slate-400" />
-              <h3 className="text-xl font-medium text-white/60 mb-2 [.light-theme_&]:!text-[#0f172a]">
-                拖拽或点击上方按钮导入聊天记录
-              </h3>
-              <p className="text-white/40 mb-8 [.light-theme_&]:!text-[#64748b]">
-                支持批量导入 .zip 或 .jsonl 格式文件
+            <div className="flex flex-col items-center justify-center p-8 rounded-2xl bg-white/5 [.light-theme_&]:!bg-[#ffffff] [.light-theme_&]:!shadow-xs text-white/40 [.light-theme_&]:!text-[#64748b] select-none">
+              <MessageSquare className="w-12 h-12 mb-3 opacity-50 text-white/40 [.light-theme_&]:!text-[#64748b]" />
+              <p className="text-sm font-medium text-white/70 [.light-theme_&]:!text-[#0f172a]">
+                暂无聊天记录 点击上方按钮导入
               </p>
             </div>
           ) : (
@@ -2108,6 +2145,9 @@ export function ChatViewer({
               exit={{ opacity: 0, scale: 0.98, y: 20 }}
               transition={{ duration: 0.3, ease: [0.23, 1, 0.32, 1] }}
               className="absolute inset-0 z-10 bg-slate-900/80 backdrop-blur-xl flex h-full pt-16 [.light-theme_&]:bg-[#FCFCFC]/80 [.light-theme_&]:backdrop-blur-3xl"
+              style={{
+                '--chat-font-size': `${chatFontSize}px`,
+              } as React.CSSProperties}
             >
               <div className="relative z-0 h-full w-full">
                 <div className="absolute inset-0">
@@ -2210,7 +2250,7 @@ export function ChatViewer({
 
                               {/* Card Body Content */}
                               <div 
-                                className="prose prose-sm sm:prose-base max-w-none chat-bubble-prose leading-relaxed break-words"
+                                className="prose max-w-none chat-bubble-prose leading-relaxed break-words"
                                 style={{ color: cardTextColor }}
                               >
                                 <MessageContent
@@ -2303,7 +2343,7 @@ export function ChatViewer({
                                 }}
                               >
                                 <div
-                                  className="prose prose-sm max-w-none chat-bubble-prose
+                                  className="prose max-w-none chat-bubble-prose
                                       prose-headings:text-inherit prose-p:leading-relaxed 
                                       prose-a:underline hover:opacity-80
                                       prose-strong:font-bold prose-code:text-pink-300

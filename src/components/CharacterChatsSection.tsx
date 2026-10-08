@@ -69,7 +69,8 @@ export function CharacterChatsSection({
     return (localStorage.getItem('chat_reader_mode') as 'novel' | 'bubble') || 'novel';
   });
   const [novelFontSize, setNovelFontSize] = useState<number>(() => {
-    return parseInt(localStorage.getItem('chat_reader_font_size') || '15', 10);
+    const saved = localStorage.getItem('chat_reader_font_size');
+    return saved ? parseFloat(saved) : 16.5;
   });
   const [readingProgress, setReadingProgress] = useState(0);
   const readerScrollRef = useRef<HTMLDivElement>(null);
@@ -740,26 +741,34 @@ export function CharacterChatsSection({
                     </button>
                   </div>
 
-                  {/* Font Size Adjuster in Novel Mode */}
-                  {readingMode === 'novel' && (
-                    <div className="hidden sm:flex items-center bg-white/5 border border-white/10 rounded-full px-1 py-0.5">
-                      <button
-                        onClick={() => setNovelFontSize((prev) => Math.max(13, prev - 1))}
-                        className="px-1.5 py-0.5 text-xs text-white/60 hover:text-white transition font-mono"
-                        title="缩小字号"
-                      >
-                        A-
-                      </button>
-                      <span className="text-[11px] text-blue-300 font-mono px-1">{novelFontSize}</span>
-                      <button
-                        onClick={() => setNovelFontSize((prev) => Math.min(22, prev + 1))}
-                        className="px-1.5 py-0.5 text-xs text-white/60 hover:text-white transition font-mono"
-                        title="放大字号"
-                      >
-                        A+
-                      </button>
-                    </div>
-                  )}
+                  {/* Font Size Adjuster for Novel & Bubble Mode */}
+                  <div className="inline-flex items-center gap-1 select-none">
+                    <button
+                      onClick={() => {
+                        const next = Math.max(13, novelFontSize - 1);
+                        setNovelFontSize(next);
+                        localStorage.setItem('chat_reader_font_size', String(next));
+                      }}
+                      className="w-6 h-6 flex items-center justify-center rounded-lg text-xs font-bold leading-none text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 active:scale-90 transition cursor-pointer [.light-theme_&]:!text-blue-600 [.light-theme_&]:hover:!bg-blue-500/10"
+                      title="缩小字号"
+                    >
+                      A-
+                    </button>
+                    <span className="min-w-[28px] text-center text-xs font-mono font-bold text-blue-400 [.light-theme_&]:!text-blue-600">
+                      {novelFontSize}
+                    </span>
+                    <button
+                      onClick={() => {
+                        const next = Math.min(24, novelFontSize + 1);
+                        setNovelFontSize(next);
+                        localStorage.setItem('chat_reader_font_size', String(next));
+                      }}
+                      className="w-6 h-6 flex items-center justify-center rounded-lg text-xs font-bold leading-none text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 active:scale-90 transition cursor-pointer [.light-theme_&]:!text-blue-600 [.light-theme_&]:hover:!bg-blue-500/10"
+                      title="放大字号"
+                    >
+                      A+
+                    </button>
+                  </div>
 
                   {/* Bubble ColorSphere in Bubble Mode */}
                   {readingMode === 'bubble' && (
@@ -959,7 +968,7 @@ export function CharacterChatsSection({
                 ) : (
                   /* Bubble IM Layout */
                   <Virtuoso
-                    style={{ height: "100%" }}
+                    style={{ height: "100%", '--chat-font-size': `${novelFontSize}px` } as React.CSSProperties}
                     data={selectedChat.messages}
                     initialTopMostItemIndex={
                       selectedChat.messages ? selectedChat.messages.length - 1 : 0
@@ -1029,7 +1038,7 @@ export function CharacterChatsSection({
                               }}
                             >
                               <div
-                                className="prose prose-sm max-w-none chat-bubble-prose
+                                className="prose max-w-none chat-bubble-prose
                                   prose-headings:text-inherit prose-p:leading-relaxed 
                                   prose-a:underline hover:opacity-80
                                   prose-strong:font-bold prose-code:text-pink-300
