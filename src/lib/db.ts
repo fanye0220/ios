@@ -1,4 +1,4 @@
-import { getFallbackAvatar, resolveAvatarUrl } from "./avatar";
+import { getFallbackAvatar, resolveAvatarUrl, safeCreateObjectURL } from "./avatar";
 import { openDB, DBSchema, IDBPDatabase } from "idb";
 import { getLocalImageUrl, isAndroid } from "./appBridge";
 import { sanitizeChatMessages } from "./chatParse";
@@ -27,6 +27,50 @@ export function enqueueAndroidSync<T>(task: () => Promise<T>): Promise<T> {
       }
     });
   });
+}
+
+// 批量写入（比如一次导入几千张卡）时，逐条派发 charactersUpdated 会让首页列表被反复整表重载。
+// 批量模式下先攒着不发，结束或短时间内的重复派发再合并成一次。
+let _bulkUpdateDepth = 0;
+let _pendingBulkNotify = false;
+let _charactersUpdatedTimer: ReturnType<typeof setTimeout> | null = null;
+let _charactersUpdatedLastAt = 0;
+const CHARACTERS_UPDATED_MIN_INTERVAL = 500;
+
+export function beginBulkCharacterUpdates(): void {
+  _bulkUpdateDepth++;
+}
+
+export function endBulkCharacterUpdates(): void {
+  if (_bulkUpdateDepth > 0) _bulkUpdateDepth--;
+  if (_bulkUpdateDepth === 0 && _pendingBulkNotify) {
+    _pendingBulkNotify = false;
+    if (_charactersUpdatedTimer) {
+      clearTimeout(_charactersUpdatedTimer);
+      _charactersUpdatedTimer = null;
+    }
+    notifyCharactersUpdated();
+  }
+}
+
+function notifyCharactersUpdated(): void {
+  if (typeof window === "undefined") return;
+  if (_bulkUpdateDepth > 0) {
+    _pendingBulkNotify = true;
+    return;
+  }
+  const now = Date.now();
+  const elapsed = now - _charactersUpdatedLastAt;
+  if (elapsed < CHARACTERS_UPDATED_MIN_INTERVAL) {
+    if (_charactersUpdatedTimer) return;
+    _charactersUpdatedTimer = setTimeout(() => {
+      _charactersUpdatedTimer = null;
+      notifyCharactersUpdated();
+    }, CHARACTERS_UPDATED_MIN_INTERVAL - elapsed);
+    return;
+  }
+  _charactersUpdatedLastAt = now;
+  window.dispatchEvent(new CustomEvent("charactersUpdated"));
 }
 
 export type ResourceType = 'character' | 'worldbook' | 'qr' | 'preset' | 'script' | 'theme';
@@ -259,7 +303,15 @@ export function getResourceType(char: any, foldersMap?: Map<string, string>): Re
     filename.includes('.script') || filename.includes('_script') || filename.includes('.regex') ||
     /(?:^|[_\-\s\[\(（【])(?:脚本|正则|script|regex)(?:[\]\)）】]|$|[_\-\s\.])/i.test(rawName);
 
-  if (isScriptArray || hasScriptProps || isScriptFileOrName || char?.isTool) {
+  // 套壳写法：文件最外层是 { name, regex / scripts / regex_scripts: [...] }
+  // 只认文件最外层（outer），不认卡内 extensions 里的正则，避免把角色卡误判成脚本。
+  // 而且真角色卡在函数开头已被 isActualCharacterCard 拦截，根本走不到这里。
+  const isNestedScriptContainer =
+    (Array.isArray(outer.regex) && outer.regex.length > 0) ||
+    (Array.isArray(outer.scripts) && outer.scripts.length > 0) ||
+    (Array.isArray(outer.regex_scripts) && outer.regex_scripts.length > 0);
+
+  if (isScriptArray || hasScriptProps || isScriptFileOrName || isNestedScriptContainer || char?.isTool) {
     return 'script';
   }
 
@@ -324,6 +376,7 @@ export interface CardVersionSnapshot {
   avatarUrlFallback?: string;
   cardName: string;
   sourceCharId?: string;
+  sourceUrlFallback?: string;
   completeCardPngBlob?: Blob;
   tags?: string[];
 }
@@ -354,12 +407,6 @@ export interface CharacterCard {
   isQR?: boolean;
   category?: string;
   sourceUrl?: string;
-  updateUrl?: string;
-  lastCheckedAt?: number;
-  lastCheckResult?: 'up-to-date' | 'has-update' | 'error' | string;
-  lastCheckVersion?: string;
-  lastCheckChanges?: string[];
-  lastCheckError?: string;
   tokenCount?: number;
   permanentTokens?: number;
 }
@@ -704,11 +751,11 @@ export async function getFolderPreviews(
             );
           } else if (meta.hasBlobsSeparated) {
             const blobs = await db.get("blobs", meta.id);
-            if (blobs?.avatarBlob) url = URL.createObjectURL(blobs.avatarBlob);
+            if (blobs?.avatarBlob) url = safeCreateObjectURL(blobs.avatarBlob);
           } else {
             const legacyChar = await db.get("characters", meta.id);
             if (legacyChar?.avatarBlob) {
-              url = URL.createObjectURL(legacyChar.avatarBlob);
+              url = safeCreateObjectURL(legacyChar.avatarBlob);
             }
           }
           let fallbackUrlStr = meta.avatarUrlFallback;
@@ -1885,7 +1932,7 @@ export async function saveCharacters(
   }
 
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("charactersUpdated"));
+    notifyCharactersUpdated();
   }
 
   // 2.5) Link orphaned chats to these characters if names match.
@@ -2262,7 +2309,7 @@ export async function deleteCharactersBulk(
   }
   invalidateCache();
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("charactersUpdated"));
+    notifyCharactersUpdated();
   }
 }
 
@@ -2339,7 +2386,7 @@ export async function deleteCharacter(id: string): Promise<void> {
     }
   invalidateCache();
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("charactersUpdated"));
+    notifyCharactersUpdated();
   }
 }
 
@@ -2415,7 +2462,7 @@ export async function restoreCharacter(id: string): Promise<void> {
   }
   invalidateCache();
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("charactersUpdated"));
+    notifyCharactersUpdated();
   }
 }
 
