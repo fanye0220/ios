@@ -38,9 +38,27 @@ function ensureRandomUUID() {
 }
 ensureRandomUUID();
 
+// iOS WebClip（添加到主屏幕）独立模式下跳转保护：防止点击内部链接弹回 Safari 浏览器
+if (typeof window !== 'undefined' && (window.navigator as any).standalone) {
+  document.addEventListener('click', (e: MouseEvent) => {
+    const target = (e.target as HTMLElement)?.closest('a');
+    if (target && target.href && target.target !== '_blank') {
+      const url = new URL(target.href, window.location.href);
+      if (url.origin === window.location.origin) {
+        e.preventDefault();
+        window.location.href = target.href;
+      }
+    }
+  }, false);
+}
+
 // Load theme preference on startup
-if (localStorage.getItem('tavern_theme') === 'light') {
-  document.documentElement.classList.add('light-theme');
+try {
+  if (localStorage.getItem('tavern_theme') === 'light') {
+    document.documentElement.classList.add('light-theme');
+  }
+} catch (e) {
+  // iOS 上 localStorage 可能不可用，读取主题失败不应影响启动
 }
 
 // 崩溃兜底：出错时把错误文字直接显示在屏幕上，而不是白屏。
@@ -58,17 +76,48 @@ function showCrashInfo(title: string, detail: string) {
   } catch {}
 }
 
+// index.html 里的早期兜底（能区分「来源不明」的 Script error 并只弹小横幅）。
+// 有它就用它，避免同一个错误被重复处理两次。
+const earlyCrash = (window as any).__miuCrash;
+
+function isAnonymousScriptError(msg: string, file: string, err: any) {
+  if (err) return false;
+  if (file) return false;
+  return !msg || msg === 'Script error.' || msg === 'Script error';
+}
+
 window.addEventListener('error', (e: any) => {
+  const msg = (e && e.message) || '';
+  const file = (e && e.filename) || '';
   const err = e && e.error;
-  showCrashInfo(
-    'Error: ' + ((e && e.message) || ''),
-    ((e && e.filename) || '') + ':' + ((e && e.lineno) || 0) + ':' + ((e && e.colno) || 0) + '\n' + ((err && (err.stack || err.message)) || '')
-  );
+  const detail =
+    file + ':' + ((e && e.lineno) || 0) + ':' + ((e && e.colno) || 0) + '\n' + ((err && (err.stack || err.message)) || '');
+  if (earlyCrash && typeof earlyCrash.show === 'function') {
+    if (isAnonymousScriptError(msg, file, err)) {
+      if (typeof earlyCrash.banner === 'function') earlyCrash.banner('Script error.', '来源不明（多为代理/注入脚本），已跳过，应用可继续使用');
+      return;
+    }
+    earlyCrash.show('Error: ' + msg, detail, false);
+    return;
+  }
+  showCrashInfo('Error: ' + msg, detail);
 });
 
 window.addEventListener('unhandledrejection', (e: any) => {
   const r = e && e.reason;
-  showCrashInfo('UnhandledRejection: ' + ((r && r.message) || String(r)), (r && r.stack) || '');
+  const msg = (r && r.message) || String(r);
+  const stack = (r && r.stack) || '';
+  if (!msg && !stack) {
+    if (earlyCrash && typeof earlyCrash.banner === 'function') {
+      earlyCrash.banner('UnhandledRejection', '来源不明，已跳过');
+      return;
+    }
+  }
+  if (earlyCrash && typeof earlyCrash.show === 'function') {
+    earlyCrash.show('UnhandledRejection: ' + msg, stack, false);
+    return;
+  }
+  showCrashInfo('UnhandledRejection: ' + msg, stack);
 });
 
 class CrashBoundary extends Component<{children: ReactNode}, {crashed: boolean}> {

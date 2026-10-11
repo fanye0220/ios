@@ -7,10 +7,20 @@ export interface VersionInfo {
   forceUpdate?: boolean;
 }
 
-const DEFAULT_UPDATE_MANIFEST_URL = localStorage.getItem('miu_update_check_url') || 'https://raw.githubusercontent.com/fanye0220/APP/main/version.json';
+// iOS Safari 在禁用 Cookie / 部分独立模式下访问 localStorage 会直接抛错，
+// 这里放模块顶层会连整个 App 都加载不了，所以必须兜住。
+function safeLocalStorageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+const DEFAULT_UPDATE_MANIFEST_URL = safeLocalStorageGet('miu_update_check_url') || 'https://raw.githubusercontent.com/fanye0220/APP/main/version.json';
 
 export function getUpdateManifestUrl(): string {
-  return localStorage.getItem('miu_update_check_url') || DEFAULT_UPDATE_MANIFEST_URL;
+  return safeLocalStorageGet('miu_update_check_url') || DEFAULT_UPDATE_MANIFEST_URL;
 }
 
 export function setUpdateManifestUrl(url: string): void {

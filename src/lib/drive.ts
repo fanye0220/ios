@@ -16,13 +16,30 @@ provider.addScope('https://www.googleapis.com/auth/drive.file');
 // Flag to indicate if we are in the middle of a sign-in flow.
 let isSigningIn = false;
 // Cache the access token in memory with persistence.
-let cachedAccessToken: string | null = localStorage.getItem('google_drive_access_token');
-let tokenExpiration: number | null = Number(localStorage.getItem('google_drive_token_expiration')) || null;
+// iOS Safari 在禁用 Cookie / 独立模式下访问 localStorage 会抛错，
+// 而这些语句在模块加载期执行（早于任何错误兜底），一抛就是整页白屏，所以必须包住。
+function safeStorageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+function safeStorageRemove(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch (e) {
+    /* 忽略：存储不可用时无需处理 */
+  }
+}
+
+let cachedAccessToken: string | null = safeStorageGet('google_drive_access_token');
+let tokenExpiration: number | null = Number(safeStorageGet('google_drive_token_expiration')) || null;
 
 if (tokenExpiration && Date.now() > tokenExpiration) {
   cachedAccessToken = null;
-  localStorage.removeItem('google_drive_access_token');
-  localStorage.removeItem('google_drive_token_expiration');
+  safeStorageRemove('google_drive_access_token');
+  safeStorageRemove('google_drive_token_expiration');
 }
 
 export type SyncState = {
