@@ -1,4 +1,4 @@
-import { getFallbackAvatar, resolveAvatarUrl, safeCreateObjectURL } from '../lib/avatar';
+import { getFallbackAvatar, resolveAvatarUrl } from '../lib/avatar';
 import { useState, useEffect, useRef, memo, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -203,8 +203,8 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
         }
 
         setEditNameValue(char.name);
-        const url = char.avatarBlob ? safeCreateObjectURL(char.avatarBlob) : null;
-        if (url) {
+        if (char.avatarBlob) {
+          const url = URL.createObjectURL(char.avatarBlob);
           setAvatarUrl(url);
         } else if (char.localFilePath && char.localFilePath.match(/\.(png|jpe?g|webp|gif|bmp)$/i)) {
             const { getLocalImageUrl } = await import('../lib/appBridge');
@@ -942,8 +942,8 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
             onError={(e) => {
               const target = e.target as HTMLImageElement;
               if (character.avatarBlob) {
-                  const blobUrl = safeCreateObjectURL(character.avatarBlob);
-                  if (blobUrl && target.src !== blobUrl && !target.src.startsWith('blob:')) {
+                  const blobUrl = URL.createObjectURL(character.avatarBlob);
+                  if (target.src !== blobUrl && !target.src.startsWith('blob:')) {
                       target.src = blobUrl;
                       setAvatarUrl(blobUrl);
                       return;
@@ -1712,8 +1712,8 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
                     setCharacter(updated);
                     setEditNameValue(updated.name);
                     if (updated.avatarBlob) {
-                      const newUrl = safeCreateObjectURL(updated.avatarBlob);
-                      if (newUrl) setAvatarUrl(newUrl);
+                      const newUrl = URL.createObjectURL(updated.avatarBlob);
+                      setAvatarUrl(newUrl);
                     } else if (updated.avatarUrlFallback) {
                       setAvatarUrl(resolveAvatarUrl(updated.avatarUrlFallback, updated.name || updated.id));
                     }
@@ -1725,8 +1725,7 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
                         setCharacter(char);
                         setEditNameValue(char.name);
                         if (char.avatarBlob) {
-                          const url = safeCreateObjectURL(char.avatarBlob);
-                          if (url) setAvatarUrl(url);
+                          setAvatarUrl(URL.createObjectURL(char.avatarBlob));
                         }
                       }
                     });
@@ -1760,8 +1759,8 @@ export const CharacterDetail = memo(function CharacterDetail({ id, onBack, onOpe
                 setAvatarUrl(getLocalImageUrl(updatedCharacter.localFilePath!, updatedCharacter.updatedAt || updatedCharacter.createdAt));
               });
             } else if (updatedCharacter.avatarBlob) {
-              const url = safeCreateObjectURL(updatedCharacter.avatarBlob);
-              if (url) setAvatarUrl(url);
+              const url = URL.createObjectURL(updatedCharacter.avatarBlob);
+              setAvatarUrl(url);
             }
             window.dispatchEvent(new CustomEvent('charactersUpdated'));
           }}
@@ -1889,7 +1888,7 @@ function FullScreenTextModal({
                 <textarea 
                   value={editValue}
                   onChange={e => setEditValue(e.target.value)}
-                  className="w-full min-h-[300px] bg-black/30 border border-white/10 rounded-xl p-4 text-white text-sm sm:text-base leading-relaxed focus:outline-none focus:border-blue-500 transition resize-none font-sans [.light-theme_&]:!bg-[#f2f2f7] [.light-theme_&]:!border-slate-200/80 [.light-theme_&]:!text-[#0f172a]"
+                  className="w-full min-h-[300px] bg-black/30 border border-white/10 rounded-lg p-4 text-white text-sm sm:text-base leading-relaxed focus:outline-none focus:border-blue-500 transition resize-none font-sans [.light-theme_&]:bg-black/5 [.light-theme_&]:border-black/10 [.light-theme_&]:text-[#1c1c1e]"
                   autoFocus
                 />
               ) : (
@@ -1917,7 +1916,7 @@ function FullScreenTextModal({
                 </button>
                 <button 
                   onClick={handleSave} 
-                  className="px-6 py-2 rounded-full font-bold text-xs sm:text-sm bg-white text-black hover:bg-neutral-200 [.light-theme_&]:!bg-[#007aff] [.light-theme_&]:!text-white [.light-theme_&]:hover:!bg-[#0066d6] transition flex items-center gap-2 shadow-xs cursor-pointer"
+                  className="px-6 py-2 rounded-full font-bold text-xs sm:text-sm bg-white text-black hover:bg-neutral-200 [.light-theme_&]:!bg-black [.light-theme_&]:!text-white [.light-theme_&]:hover:!bg-neutral-800 transition flex items-center gap-2 shadow-sm cursor-pointer"
                 >
                   <Save className="w-4 h-4 stroke-[2.5]" />
                   保存
@@ -1998,7 +1997,7 @@ function TextPreview({
           <textarea 
             value={editValue}
             onChange={e => setEditValue(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded-xl p-3.5 text-white text-sm sm:text-base leading-relaxed focus:outline-none focus:border-blue-500 min-h-[220px] resize-none [.light-theme_&]:!bg-[#f2f2f7] [.light-theme_&]:!border-slate-200/80 [.light-theme_&]:!text-[#0f172a]"
+            className="w-full bg-black/30 border border-white/10 rounded-xl p-3.5 text-white text-sm sm:text-base leading-relaxed focus:outline-none focus:border-blue-500 min-h-[220px] resize-none [.light-theme_&]:!bg-black/5 [.light-theme_&]:!border-black/10 [.light-theme_&]:!text-[#0f172a]"
             autoFocus
           />
           <div className="flex justify-end gap-3 pt-1">
@@ -2010,7 +2009,7 @@ function TextPreview({
             </button>
             <button 
               onClick={handleSave} 
-              className="px-5 py-1.5 rounded-full font-bold text-xs sm:text-sm bg-white text-black hover:bg-neutral-200 [.light-theme_&]:!bg-[#007aff] [.light-theme_&]:!text-white [.light-theme_&]:hover:!bg-[#0066d6] transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+              className="px-5 py-1.5 rounded-full font-bold text-xs sm:text-sm bg-white text-black hover:bg-neutral-200 [.light-theme_&]:!bg-black [.light-theme_&]:!text-white [.light-theme_&]:hover:!bg-neutral-800 transition flex items-center gap-1.5 shadow-sm cursor-pointer"
             >
               <Save className="w-3.5 h-3.5 stroke-[2.5]" />
               保存
@@ -2135,7 +2134,7 @@ function AlternateGreetingCard({
           <textarea 
             value={editValue}
             onChange={e => setEditValue(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded-xl p-3.5 text-white text-sm sm:text-base leading-relaxed focus:outline-none focus:border-blue-500 min-h-[220px] resize-none [.light-theme_&]:!bg-[#f2f2f7] [.light-theme_&]:!border-slate-200/80 [.light-theme_&]:!text-[#0f172a]"
+            className="w-full bg-black/30 border border-white/10 rounded-xl p-3.5 text-white text-sm sm:text-base leading-relaxed focus:outline-none focus:border-blue-500 min-h-[220px] resize-none [.light-theme_&]:!bg-black/5 [.light-theme_&]:!border-black/10 [.light-theme_&]:!text-[#0f172a]"
             autoFocus
           />
           <div className="flex justify-end gap-3 pt-1">
@@ -2147,7 +2146,7 @@ function AlternateGreetingCard({
             </button>
             <button 
               onClick={handleSave} 
-              className="px-5 py-1.5 rounded-full font-bold text-xs sm:text-sm bg-white text-black hover:bg-neutral-200 [.light-theme_&]:!bg-[#007aff] [.light-theme_&]:!text-white [.light-theme_&]:hover:!bg-[#0066d6] transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+              className="px-5 py-1.5 rounded-full font-bold text-xs sm:text-sm bg-white text-black hover:bg-neutral-200 [.light-theme_&]:!bg-black [.light-theme_&]:!text-white [.light-theme_&]:hover:!bg-neutral-800 transition flex items-center gap-1.5 shadow-sm cursor-pointer"
             >
               <Save className="w-3.5 h-3.5 stroke-[2.5]" />
               保存
@@ -2379,7 +2378,7 @@ export function WorldbookViewer({ book, onUpdate, onDelete }: { book: any; onUpd
                     type="text" 
                     value={editingEntry.comment || editingEntry.name || ''}
                     onChange={(e) => setEditingEntry({...editingEntry, comment: e.target.value, name: e.target.value})}
-                    className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition [.light-theme_&]:!bg-[#f2f2f7] [.light-theme_&]:!border-slate-200/80 [.light-theme_&]:!text-[#0f172a]"
+                    className="w-full bg-black/30 border border-white/10 rounded-lg px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition [.light-theme_&]:bg-black/5 [.light-theme_&]:border-black/10 [.light-theme_&]:text-[#1c1c1e]"
                     placeholder="条目的标题，不影响匹配"
                   />
                 </div>
@@ -2389,7 +2388,7 @@ export function WorldbookViewer({ book, onUpdate, onDelete }: { book: any; onUpd
                     type="text" 
                     value={(editingEntry.keys || []).join(', ')}
                     onChange={(e) => setEditingEntry({...editingEntry, keys: e.target.value.split(',').map((k: string)=>k.trim()).filter((k: string)=>k)})}
-                    className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition [.light-theme_&]:!bg-[#f2f2f7] [.light-theme_&]:!border-slate-200/80 [.light-theme_&]:!text-[#0f172a]"
+                    className="w-full bg-black/30 border border-white/10 rounded-lg px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition [.light-theme_&]:bg-black/5 [.light-theme_&]:border-black/10 [.light-theme_&]:text-[#1c1c1e]"
                   />
                 </div>
 
@@ -2400,7 +2399,7 @@ export function WorldbookViewer({ book, onUpdate, onDelete }: { book: any; onUpd
                       type="number" 
                       value={editingEntry.order ?? 100}
                       onChange={(e) => setEditingEntry({...editingEntry, order: parseInt(e.target.value) || 0})}
-                      className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition [.light-theme_&]:!bg-[#f2f2f7] [.light-theme_&]:!border-slate-200/80 [.light-theme_&]:!text-[#0f172a]"
+                      className="w-full bg-black/30 border border-white/10 rounded-lg px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition [.light-theme_&]:bg-black/5 [.light-theme_&]:border-black/10 [.light-theme_&]:text-[#1c1c1e]"
                     />
                   </div>
                   <div>
@@ -2408,7 +2407,7 @@ export function WorldbookViewer({ book, onUpdate, onDelete }: { book: any; onUpd
                     <select
                       value={editingEntry.extensions?.position ?? editingEntry.position ?? 1}
                       onChange={(e) => setEditingEntry({...editingEntry, extensions: {...(editingEntry.extensions || {}), position: parseInt(e.target.value)}})}
-                      className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition [.light-theme_&]:!bg-[#f2f2f7] [.light-theme_&]:!border-slate-200/80 [.light-theme_&]:!text-[#0f172a]"
+                      className="w-full bg-black/30 border border-white/10 rounded-lg px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition [.light-theme_&]:bg-black/5 [.light-theme_&]:border-black/10 [.light-theme_&]:text-[#1c1c1e]"
                     >
                       <option value={0}>0 - 角色设定前 (Before Char Def)</option>
                       <option value={1}>1 - 角色设定后 (After Char Def)</option>
@@ -2425,7 +2424,7 @@ export function WorldbookViewer({ book, onUpdate, onDelete }: { book: any; onUpd
                       type="checkbox"
                       checked={!!editingEntry.constant}
                       onChange={(e) => setEditingEntry({...editingEntry, constant: e.target.checked})}
-                      className="rounded bg-black/30 border-white/10 text-blue-500 focus:ring-blue-500/20 [.light-theme_&]:bg-white [.light-theme_&]:border-slate-300"
+                      className="rounded bg-black/30 border-white/10 text-blue-500 focus:ring-blue-500/20 [.light-theme_&]:bg-white [.light-theme_&]:border-black/20"
                     />
                     常驻激活 (Constant)
                   </label>
@@ -2434,7 +2433,7 @@ export function WorldbookViewer({ book, onUpdate, onDelete }: { book: any; onUpd
                       type="checkbox"
                       checked={editingEntry.selective !== false}
                       onChange={(e) => setEditingEntry({...editingEntry, selective: e.target.checked})}
-                      className="rounded bg-black/30 border-white/10 text-blue-500 focus:ring-blue-500/20 [.light-theme_&]:bg-white [.light-theme_&]:border-slate-300"
+                      className="rounded bg-black/30 border-white/10 text-blue-500 focus:ring-blue-500/20 [.light-theme_&]:bg-white [.light-theme_&]:border-black/20"
                     />
                     条件触发 (Selective)
                   </label>
@@ -2445,7 +2444,7 @@ export function WorldbookViewer({ book, onUpdate, onDelete }: { book: any; onUpd
                   <textarea 
                     value={editingEntry.content || editingEntry.entry || ''}
                     onChange={(e) => setEditingEntry({...editingEntry, content: e.target.value, entry: e.target.value})}
-                    className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition min-h-[150px] resize-none [.light-theme_&]:!bg-[#f2f2f7] [.light-theme_&]:!border-slate-200/80 [.light-theme_&]:!text-[#0f172a]"
+                    className="w-full bg-black/30 border border-white/10 rounded-lg px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition min-h-[150px] resize-none [.light-theme_&]:bg-black/5 [.light-theme_&]:border-black/10 [.light-theme_&]:text-[#1c1c1e]"
                   />
                 </div>
               </div>
@@ -2462,7 +2461,7 @@ export function WorldbookViewer({ book, onUpdate, onDelete }: { book: any; onUpd
                 </button>
                 <button 
                   onClick={saveEntry} 
-                  className="px-6 py-2 rounded-full font-bold text-xs sm:text-sm bg-white text-black hover:bg-neutral-200 [.light-theme_&]:!bg-[#007aff] [.light-theme_&]:!text-white [.light-theme_&]:hover:!bg-[#0066d6] transition flex items-center gap-2 shadow-xs cursor-pointer"
+                  className="px-6 py-2 rounded-full font-bold text-xs sm:text-sm bg-white text-black hover:bg-neutral-200 [.light-theme_&]:!bg-black [.light-theme_&]:!text-white [.light-theme_&]:hover:!bg-neutral-800 transition flex items-center gap-2 shadow-sm cursor-pointer"
                 >
                   <Save className="w-4 h-4 stroke-[2.5]" />
                   保存

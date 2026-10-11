@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { safeCreateObjectURL } from "./avatar";
 
 /**
  * 统一管理 blob -> object URL 的创建与释放。
@@ -16,10 +15,10 @@ export function useObjectUrl(blob: Blob | null | undefined): string | null {
       setUrl(null);
       return;
     }
-    const objectUrl = safeCreateObjectURL(blob);
+    const objectUrl = URL.createObjectURL(blob);
     setUrl(objectUrl);
     return () => {
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      URL.revokeObjectURL(objectUrl);
     };
   }, [blob]);
 
@@ -50,7 +49,7 @@ export function useManagedObjectUrl(initial: string | null = null) {
 
   const setBlobUrl = useCallback((blob: Blob) => {
     revokeTracked();
-    const objectUrl = safeCreateObjectURL(blob);
+    const objectUrl = URL.createObjectURL(blob);
     trackedBlobUrlRef.current = objectUrl;
     setUrlState(objectUrl);
     return objectUrl;

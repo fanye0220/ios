@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { X, Sparkles, ChevronRight, RefreshCw, Loader2, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { CharacterCard, saveCharacter, getCharacter } from '../lib/db';
 import { generateSummaryForCharacter } from '../lib/ai';
-import { getFallbackAvatar, resolveAvatarUrl, safeCreateObjectURL } from '../lib/avatar';
+import { getFallbackAvatar, resolveAvatarUrl } from '../lib/avatar';
 import { useBackHandler } from '../lib/useBackHandler';
 
 interface Props {
@@ -63,22 +63,14 @@ export function CharacterSummaryModal({
         }
       });
     } else if (character.avatarBlob) {
-      const created = safeCreateObjectURL(character.avatarBlob);
-      if (created) {
-        urlToRevoke = created;
-        if (isMounted) setAvatarUrl(created);
-      } else {
-        setAvatarUrl(resolveAvatarUrl(character.avatarUrlFallback, name || character.id));
-      }
+      urlToRevoke = URL.createObjectURL(character.avatarBlob);
+      if (isMounted) setAvatarUrl(urlToRevoke);
     } else if (character.hasBlobsSeparated) {
       import('../lib/db').then(({ getCharacterBlob }) => {
         getCharacterBlob(character.id).then(blobs => {
           if (blobs?.avatarBlob && isMounted) {
-            const created = safeCreateObjectURL(blobs.avatarBlob);
-            if (created) {
-              urlToRevoke = created;
-              setAvatarUrl(created);
-            }
+            urlToRevoke = URL.createObjectURL(blobs.avatarBlob);
+            setAvatarUrl(urlToRevoke);
           }
         });
       });

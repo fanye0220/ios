@@ -1,5 +1,3 @@
-import { safeCreateObjectURL } from "./avatar";
-
 /**
  * 参考卡库的做法: 缩略图 URL 用一个"有上限"的 LRU 缓存管理,
  * 不管库里有多少张卡, 内存里同时挂着的 blob URL 数量永远有天花板,
@@ -47,12 +45,8 @@ export function peekCachedUrl(key: string): string | undefined {
 export function putCachedBlobUrl(key: string, blob: Blob): string {
   const prev = cache.get(key);
   if (prev?.isBlobUrl) URL.revokeObjectURL(prev.url);
-  const url = safeCreateObjectURL(blob);
-  if (!url) {
-    return "";
-  }
-  const isBlobUrl = url.startsWith("blob:");
-  const entry: CacheEntry = { url, isBlobUrl };
+  const url = URL.createObjectURL(blob);
+  const entry: CacheEntry = { url, isBlobUrl: true };
   touch(key, entry);
   evictIfNeeded();
   return url;

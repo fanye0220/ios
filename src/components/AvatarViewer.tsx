@@ -1,4 +1,4 @@
-import { getFallbackAvatar, resolveAvatarUrl, safeCreateObjectURL } from '../lib/avatar';
+import { getFallbackAvatar, resolveAvatarUrl } from '../lib/avatar';
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -32,13 +32,11 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
   useEffect(() => {
     let objectUrl: string | null = null;
     if (previewBlob) {
-      objectUrl = safeCreateObjectURL(previewBlob);
-      if (objectUrl) setCurrentAvatarUrl(objectUrl);
-      else setCurrentAvatarUrl(resolveAvatarUrl(character.avatarUrlFallback, character.name || character.id));
+      objectUrl = URL.createObjectURL(previewBlob);
+      setCurrentAvatarUrl(objectUrl);
     } else if (character.avatarBlob) {
-      objectUrl = safeCreateObjectURL(character.avatarBlob);
-      if (objectUrl) setCurrentAvatarUrl(objectUrl);
-      else setCurrentAvatarUrl(resolveAvatarUrl(character.avatarUrlFallback, character.name || character.id));
+      objectUrl = URL.createObjectURL(character.avatarBlob);
+      setCurrentAvatarUrl(objectUrl);
     } else if (character.localFilePath) {
       setCurrentAvatarUrl(getLocalImageUrl(character.localFilePath, character.updatedAt || character.createdAt));
     } else {
@@ -51,23 +49,19 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
   }, [character.avatarBlob, character.localFilePath, character.avatarUrlFallback, previewBlob, character.updatedAt, character.createdAt]);
 
   useEffect(() => {
-    const urls: { blob: Blob, url: string }[] = [];
-    (character.avatarHistory || []).forEach(blob => {
-      const url = safeCreateObjectURL(blob);
-      if (url) urls.push({ blob, url });
-    });
+    const urls = (character.avatarHistory || []).map(blob => ({
+      blob,
+      url: URL.createObjectURL(blob)
+    }));
     
     // Add current avatar to history if it's not there and is a blob
     if (character.avatarBlob) {
       const isCurrentInHistory = character.avatarHistory?.some(b => b === character.avatarBlob || (b.size === character.avatarBlob?.size && b.type === character.avatarBlob?.type));
       if (!isCurrentInHistory) {
-        const url = safeCreateObjectURL(character.avatarBlob);
-        if (url) {
-          urls.unshift({
-            blob: character.avatarBlob,
-            url
-          });
-        }
+        urls.unshift({
+          blob: character.avatarBlob,
+          url: URL.createObjectURL(character.avatarBlob)
+        });
       }
     } else if (character.localFilePath && (!character.avatarHistory || character.avatarHistory.length === 0)) {
       const localUrl = getLocalImageUrl(character.localFilePath, character.updatedAt || character.createdAt);
@@ -121,9 +115,7 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
         URL.revokeObjectURL(img.src);
         reject(e);
       };
-      const objectUrl = safeCreateObjectURL(blob);
-      if (!objectUrl) return reject(new Error('Invalid image blob'));
-      img.src = objectUrl;
+      img.src = URL.createObjectURL(blob);
     });
   };
 

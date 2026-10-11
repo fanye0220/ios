@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithPopup, signInWithRedirect, GoogleAuthProvider, onAuthStateChanged, User, signInWithCredential } from 'firebase/auth';
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signInWithCredential } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { getFolders, getCachedMeta, getCharacter, getAllChatsMetadata, getChatById, saveFolder, saveCharacter, saveChatsBulk, invalidateCache, initDB } from './db';
 import { Capacitor } from '@capacitor/core';
@@ -16,30 +16,13 @@ provider.addScope('https://www.googleapis.com/auth/drive.file');
 // Flag to indicate if we are in the middle of a sign-in flow.
 let isSigningIn = false;
 // Cache the access token in memory with persistence.
-// iOS Safari 在禁用 Cookie / 独立模式下访问 localStorage 会抛错，
-// 而这些语句在模块加载期执行（早于任何错误兜底），一抛就是整页白屏，所以必须包住。
-function safeStorageGet(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch (e) {
-    return null;
-  }
-}
-function safeStorageRemove(key: string): void {
-  try {
-    localStorage.removeItem(key);
-  } catch (e) {
-    /* 忽略：存储不可用时无需处理 */
-  }
-}
-
-let cachedAccessToken: string | null = safeStorageGet('google_drive_access_token');
-let tokenExpiration: number | null = Number(safeStorageGet('google_drive_token_expiration')) || null;
+let cachedAccessToken: string | null = localStorage.getItem('google_drive_access_token');
+let tokenExpiration: number | null = Number(localStorage.getItem('google_drive_token_expiration')) || null;
 
 if (tokenExpiration && Date.now() > tokenExpiration) {
   cachedAccessToken = null;
-  safeStorageRemove('google_drive_access_token');
-  safeStorageRemove('google_drive_token_expiration');
+  localStorage.removeItem('google_drive_access_token');
+  localStorage.removeItem('google_drive_token_expiration');
 }
 
 export type SyncState = {
@@ -273,84 +256,28 @@ function stopAutoSyncRunner() {
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
   try {
     isSigningIn = true;
-    let resultUser: User | null = null;
-    let resultAccessToken: string | null = null;
-
-    // 新版 Credential Manager 不可用（国行 ROM 上 Google Play 服务缺失或过旧）时抛出的错误特征，
-    // 典型报错: "Your device doesn't support credential manager"
-    const isCredentialManagerUnavailable = (err: any) => {
-      const msg = String((err && err.message) || err || '');
-      const code = String((err && err.code) || '');
-      return /credential manager|doesn'?t support|no credential|NoCredential/i.test(msg + ' ' + code);
-    };
-
-    const nativeScopes = ['https://www.googleapis.com/auth/drive.file'];
-    const runNativeSignIn = async (options: any) => {
-      const result = await FirebaseAuthentication.signInWithGoogle(options);
-      if (!result.credential?.idToken) {
-        throw new Error('No credential returned from native Google Sign-In');
-      }
-      const firebaseCred = GoogleAuthProvider.credential(result.credential.idToken, result.credential.accessToken);
-      const authResult = await signInWithCredential(auth, firebaseCred);
-      resultUser = authResult.user;
-      resultAccessToken = result.credential.accessToken || null;
-    };
-
-    let nativeFailed: any = null;
+    let resultUser;
+    let resultAccessToken;
 
     if (Capacitor.isNativePlatform()) {
-      try {
-        // 先走系统默认（新版凭据管理器 Credential Manager）
-        await runNativeSignIn({ scopes: nativeScopes });
-      } catch (firstErr: any) {
-        console.warn('[NativeAuth] Native Google Sign-In failed:', firstErr);
-        if (!isCredentialManagerUnavailable(firstErr)) {
-          // 用户取消之类的其它情况，直接按原样抛出，不再弹第二次
-          throw firstErr;
-        }
-        try {
-          // 凭据管理器不可用（常见于国行 vivo / 华为 / 小米 / OPPO 等缺少新版 Google 服务的机器），
-          // 退回旧版 Google 登录流程，它对 Google Play 服务版本要求更低。
-          await runNativeSignIn({ scopes: nativeScopes, useCredentialManager: false });
-        } catch (secondErr: any) {
-          console.warn('[NativeAuth] Legacy Google Sign-In failed:', secondErr);
-          nativeFailed = secondErr || firstErr;
-        }
+      const result = await FirebaseAuthentication.signInWithGoogle({ scopes: ['https://www.googleapis.com/auth/drive.file'] });
+      
+      if (result.credential?.idToken) {
+        const firebaseCred = GoogleAuthProvider.credential(result.credential.idToken, result.credential.accessToken);
+        const authResult = await signInWithCredential(auth, firebaseCred);
+        resultUser = authResult.user;
+        resultAccessToken = result.credential.accessToken;
+      } else {
+        throw new Error('No credential returned from native Google Sign-In');
       }
     } else {
-      try {
-        const result = await signInWithPopup(auth, provider);
-        const credential = GoogleAuthProvider.credentialFromResult(result);
-        if (!credential?.accessToken) {
-          throw new Error('Failed to get access token from Firebase Auth');
-        }
-        resultUser = result.user;
-        resultAccessToken = credential.accessToken;
-      } catch (popupErr: any) {
-        const pMsg = String((popupErr && popupErr.message) || popupErr || '');
-        const pCode = String((popupErr && popupErr.code) || '');
-        console.warn('[WebAuth] Web popup failed, attempting redirect:', popupErr);
-        if (pMsg.includes('disallowed_useragent') || pCode.includes('disallowed_useragent')) {
-          throw new Error('Google 不允许在应用内置网页里登录（disallowed_useragent）。请在手机浏览器里打开网页版登录一次，或换一台有正常 Google 服务的设备。');
-        }
-        try {
-          await signInWithRedirect(auth, provider);
-          return null;
-        } catch (redirectErr: any) {
-          const rMsg = String((redirectErr && redirectErr.message) || redirectErr || '');
-          if (rMsg.includes('disallowed_useragent')) {
-            throw new Error('Google 不允许在应用内置网页里登录（disallowed_useragent）。请在手机浏览器里打开网页版登录一次，或换一台有正常 Google 服务的设备。');
-          }
-          throw new Error(redirectErr?.message || pMsg);
-        }
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (!credential?.accessToken) {
+        throw new Error('Failed to get access token from Firebase Auth');
       }
-    }
-
-    if (!resultUser) {
-      if (isCredentialManagerUnavailable(nativeFailed)) {
-        throw new Error('这台机器缺少可用的 Google 服务（登录用的凭据管理器不可用），无法在应用内登录云端备份。请把 Google Play 服务升级到较新版本后重试，或换一台有正常 Google 服务的设备。');
-      }
-      throw new Error(String((nativeFailed && nativeFailed.message) || nativeFailed || '无法完成 Google 账号登录'));
+      resultUser = result.user;
+      resultAccessToken = credential.accessToken;
     }
 
     cachedAccessToken = resultAccessToken;
