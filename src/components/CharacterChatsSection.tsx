@@ -1,4 +1,4 @@
-import { getFallbackAvatar } from "../lib/avatar";
+import { getFallbackAvatar, safeCreateObjectURL } from "../lib/avatar";
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   getChatsForCharacter,
@@ -322,9 +322,8 @@ export function CharacterChatsSection({
                 }
                 const folderName = nameIndex >= 0 ? pathParts[nameIndex] : "";
                 if (folderName) {
-                  const { initDB } = await import("../lib/db");
-                  const db = await initDB();
-                  const allChars: any[] = await db.getAll("characters");
+                  const { getCachedMeta } = await import("../lib/db");
+                  const allChars: any[] = await getCachedMeta();
                   const folderMatch = allChars.find(
                     (c: any) => c.name && c.name.toLowerCase() === folderName.toLowerCase(),
                   );
@@ -1006,8 +1005,10 @@ export function CharacterChatsSection({
                                 className="w-10 h-10 rounded-full object-cover border-none shadow-none"
                                 onError={(e) => {
                                   getCharacterBlob(characterId).then((b) => {
-                                    if (b && b.avatarBlob)
-                                      e.currentTarget.src = URL.createObjectURL(b.avatarBlob);
+                                    if (b && b.avatarBlob) {
+                                      const url = safeCreateObjectURL(b.avatarBlob);
+                                      if (url) e.currentTarget.src = url;
+                                    }
                                   });
                                 }}
                               />

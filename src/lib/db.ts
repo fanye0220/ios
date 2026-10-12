@@ -1,4 +1,4 @@
-import { getFallbackAvatar, resolveAvatarUrl } from "./avatar";
+import { getFallbackAvatar, resolveAvatarUrl, safeCreateObjectURL } from "./avatar";
 import { openDB, DBSchema, IDBPDatabase } from "idb";
 import { getLocalImageUrl, isAndroid } from "./appBridge";
 import { sanitizeChatMessages } from "./chatParse";
@@ -27,6 +27,50 @@ export function enqueueAndroidSync<T>(task: () => Promise<T>): Promise<T> {
       }
     });
   });
+}
+
+// 批量写入（比如一次导入几千张卡）时，逐条派发 charactersUpdated 会让首页列表被反复整表重载。
+// 批量模式下先攒着不发，结束或短时间内的重复派发再合并成一次。
+let _bulkUpdateDepth = 0;
+let _pendingBulkNotify = false;
+let _charactersUpdatedTimer: ReturnType<typeof setTimeout> | null = null;
+let _charactersUpdatedLastAt = 0;
+const CHARACTERS_UPDATED_MIN_INTERVAL = 500;
+
+export function beginBulkCharacterUpdates(): void {
+  _bulkUpdateDepth++;
+}
+
+export function endBulkCharacterUpdates(): void {
+  if (_bulkUpdateDepth > 0) _bulkUpdateDepth--;
+  if (_bulkUpdateDepth === 0 && _pendingBulkNotify) {
+    _pendingBulkNotify = false;
+    if (_charactersUpdatedTimer) {
+      clearTimeout(_charactersUpdatedTimer);
+      _charactersUpdatedTimer = null;
+    }
+    notifyCharactersUpdated();
+  }
+}
+
+function notifyCharactersUpdated(): void {
+  if (typeof window === "undefined") return;
+  if (_bulkUpdateDepth > 0) {
+    _pendingBulkNotify = true;
+    return;
+  }
+  const now = Date.now();
+  const elapsed = now - _charactersUpdatedLastAt;
+  if (elapsed < CHARACTERS_UPDATED_MIN_INTERVAL) {
+    if (_charactersUpdatedTimer) return;
+    _charactersUpdatedTimer = setTimeout(() => {
+      _charactersUpdatedTimer = null;
+      notifyCharactersUpdated();
+    }, CHARACTERS_UPDATED_MIN_INTERVAL - elapsed);
+    return;
+  }
+  _charactersUpdatedLastAt = now;
+  window.dispatchEvent(new CustomEvent("charactersUpdated"));
 }
 
 export type ResourceType = 'character' | 'worldbook' | 'qr' | 'preset' | 'script' | 'theme';
@@ -259,7 +303,15 @@ export function getResourceType(char: any, foldersMap?: Map<string, string>): Re
     filename.includes('.script') || filename.includes('_script') || filename.includes('.regex') ||
     /(?:^|[_\-\s\[\(（【])(?:脚本|正则|script|regex)(?:[\]\)）】]|$|[_\-\s\.])/i.test(rawName);
 
-  if (isScriptArray || hasScriptProps || isScriptFileOrName || char?.isTool) {
+  // 套壳写法：文件最外层是 { name, regex / scripts / regex_scripts: [...] }
+  // 只认文件最外层（outer），不认卡内 extensions 里的正则，避免把角色卡误判成脚本。
+  // 而且真角色卡在函数开头已被 isActualCharacterCard 拦截，根本走不到这里。
+  const isNestedScriptContainer =
+    (Array.isArray(outer.regex) && outer.regex.length > 0) ||
+    (Array.isArray(outer.scripts) && outer.scripts.length > 0) ||
+    (Array.isArray(outer.regex_scripts) && outer.regex_scripts.length > 0);
+
+  if (isScriptArray || hasScriptProps || isScriptFileOrName || isNestedScriptContainer || char?.isTool) {
     return 'script';
   }
 
@@ -324,6 +376,7 @@ export interface CardVersionSnapshot {
   avatarUrlFallback?: string;
   cardName: string;
   sourceCharId?: string;
+  sourceUrlFallback?: string;
   completeCardPngBlob?: Blob;
   tags?: string[];
 }
@@ -355,11 +408,11 @@ export interface CharacterCard {
   category?: string;
   sourceUrl?: string;
   updateUrl?: string;
-  lastCheckedAt?: number;
-  lastCheckResult?: 'up-to-date' | 'has-update' | 'error' | string;
+  lastCheckResult?: any;
   lastCheckVersion?: string;
-  lastCheckChanges?: string[];
   lastCheckError?: string;
+  lastCheckChanges?: any;
+  lastCheckedAt?: number;
   tokenCount?: number;
   permanentTokens?: number;
 }
@@ -518,6 +571,20 @@ export function initDB() {
           }
         }
       },
+      blocked() {
+        console.warn("IndexedDB open blocked by another tab or instance");
+      },
+      blocking() {
+        console.warn("IndexedDB blocking database upgrade in another tab");
+      },
+      terminated() {
+        console.warn("IndexedDB connection terminated unexpectedly");
+        dbPromise = null as any;
+      },
+    }).catch((err) => {
+      console.error("Failed to initialize IndexedDB:", err);
+      dbPromise = null as any;
+      throw err;
     });
   }
   return dbPromise;
@@ -589,31 +656,32 @@ export async function migrateDatabase(
   }
 
   // Second pass: retroactively categorize tool cards into designated tool folders and refresh char_meta
-  const txScan = db.transaction("characters", "readonly");
-  let cursorScan = await txScan.objectStore("characters").openCursor();
-  const allChars: CharacterCard[] = [];
-  while (cursorScan) {
-    allChars.push(cursorScan.value);
-    cursorScan = await cursorScan.continue();
-  }
+  // 一次性迁移: 逐条用独立事务读/写(不跨任务持有事务), 需要改文件夹的先收集, 最后统一写回。
+  // 注意不要在事务还开着的时候 await 定时器 —— 事务会被浏览器自动提交, 之后继续读写会抛
+  // TransactionInactiveError, 迁移就会中途失败。
+  const scanKeys = await db.getAllKeys("characters");
+  const changedChars: CharacterCard[] = [];
 
-  for (const char of allChars) {
-    let changed = false;
+  for (const scanKey of scanKeys) {
+    const char = (await db.get("characters", scanKey)) as CharacterCard | undefined;
+    if (!char) continue;
     const category = getCharacterCategoryPrefix(char);
     if (category !== "未归类" && (!char.folderId || char.folderId === "all")) {
       const folderName = category === "脚本" ? "工具区" : category;
       const targetFolderId = await getOrCreateNestedFolder([folderName]);
       if (targetFolderId && char.folderId !== targetFolderId) {
         char.folderId = targetFolderId;
-        changed = true;
+        changedChars.push(char);
       }
     }
+    await db.put("char_meta", buildCharMeta(char));
+  }
 
-    const writeTx = db.transaction(["characters", "char_meta"], "readwrite");
-    if (changed) {
-      await writeTx.objectStore("characters").put(char);
+  if (changedChars.length > 0) {
+    const writeTx = db.transaction("characters", "readwrite");
+    for (const char of changedChars) {
+      await writeTx.store.put(char);
     }
-    await writeTx.objectStore("char_meta").put(buildCharMeta(char));
     await writeTx.done;
   }
 
@@ -704,11 +772,15 @@ export async function getFolderPreviews(
             );
           } else if (meta.hasBlobsSeparated) {
             const blobs = await db.get("blobs", meta.id);
-            if (blobs?.avatarBlob) url = URL.createObjectURL(blobs.avatarBlob);
+            if (blobs?.avatarBlob) {
+              const { putCachedBlobUrl } = await import("./thumbCache");
+              url = putCachedBlobUrl(`folder_preview_${meta.id}`, blobs.avatarBlob);
+            }
           } else {
             const legacyChar = await db.get("characters", meta.id);
             if (legacyChar?.avatarBlob) {
-              url = URL.createObjectURL(legacyChar.avatarBlob);
+              const { putCachedBlobUrl } = await import("./thumbCache");
+              url = putCachedBlobUrl(`folder_preview_${meta.id}`, legacyChar.avatarBlob);
             }
           }
           let fallbackUrlStr = meta.avatarUrlFallback;
@@ -799,12 +871,14 @@ export async function saveFolder(folder: Folder): Promise<void> {
         }
       }
 
-      const allChars = await db.getAll("characters");
-      const charsToSync = allChars.filter(
+      const allMeta = await getCachedMeta();
+      const metaToSync = allMeta.filter(
         (c) => c.folderId && descendantIds.has(c.folderId) && !c.deletedAt,
       );
 
-      for (const char of charsToSync) {
+      for (const meta of metaToSync) {
+        const char = await getCharacter(meta.id);
+        if (!char) continue;
         const blobs = await db.get("blobs", char.id);
         const newPaths = await syncCharacterToAndroid(char, blobs || null);
         if (newPaths && newPaths.length > 0) {
@@ -946,12 +1020,13 @@ export async function cleanupEmptyFolders(): Promise<void> {
   const db = await initDB();
   const tx = db.transaction(["folders", "characters", "char_meta"], "readwrite");
   const allFolders = await tx.objectStore("folders").getAll();
-  const allCharacters = await tx.objectStore("characters").getAll();
-
   const charStore = tx.objectStore("characters");
   const charMetaStore = tx.objectStore("char_meta");
   let purgedTrashCharacters = 0;
-  for (const c of allCharacters) {
+
+  let cursor = await charStore.openCursor();
+  while (cursor) {
+    const c = cursor.value;
     if (
       c.localFilePath &&
       (c.localFilePath.includes("回收站/") ||
@@ -959,11 +1034,12 @@ export async function cleanupEmptyFolders(): Promise<void> {
     ) {
       if (!c.deletedAt) {
         c.deletedAt = Date.now();
-        await charStore.put(c);
+        await cursor.update(c);
         await charMetaStore.put(buildCharMeta(c));
         purgedTrashCharacters++;
       }
     }
+    cursor = await cursor.continue();
   }
 
   if (allFolders.length === 0 && purgedTrashCharacters === 0) {
@@ -1167,10 +1243,6 @@ async function buildMetaCache(): Promise<CharMeta[]> {
   // 第一次升级/索引丢失/缺少 category 字段/缺少 token 统计/需要修复历史错误分类时, 从完整角色表重建一次, 并写回轻量索引。
   // 之后所有常用入口都只读 char_meta, 不再触碰大字段 data。
   if (!newMeta || newMeta.length === 0 || newMeta.some((m) => m.category === undefined || m.tokenCount === undefined) || needsRepair) {
-    const tx = db.transaction("characters", "readonly");
-    const allChars = await tx.store.getAll();
-    await tx.done;
-
     // Build folder map for folder-based classification
     const foldersTx = db.transaction("folders", "readonly");
     const allFolders = await foldersTx.store.getAll();
@@ -1187,14 +1259,17 @@ async function buildMetaCache(): Promise<CharMeta[]> {
       }
     }
 
-    const updatedCharsToWrite: CharacterCard[] = [];
     newMeta = [];
+    // 一次性重建: 逐条用独立事务读(不跨任务持有事务), 需要修分类的先收集, 最后统一写回。
+    // 不能在事务还开着的时候 await 定时器 —— 事务会被自动提交, 之后继续写会抛
+    // TransactionInactiveError, 整个重建会中途失败。
+    const repairKeys = await db.getAllKeys("characters");
+    const repairChanged: CharacterCard[] = [];
 
-    let processed = 0;
-    for (const char of allChars) {
-      // 重建索引是重活, 定期让出主线程, 避免首次升级/修复时整个界面卡住。
-      if (++processed % 50 === 0) await new Promise((r) => setTimeout(r, 0));
-      // 过滤空无内容的无效幽灵数据
+    for (const repairKey of repairKeys) {
+      const char = (await db.get("characters", repairKey)) as CharacterCard | undefined;
+      if (!char) continue;
+
       const data = char.data?.data || char.data || {};
       const charName = char.name || data.name || data.char_name;
       const hasContent = !!(data.description || data.first_mes || data.scenario || data.creator_notes || Object.keys(data).length > 0);
@@ -1222,14 +1297,12 @@ async function buildMetaCache(): Promise<CharMeta[]> {
           changed = true;
         }
       } else {
-        // 真正普通角色卡
         if (char.category !== "未归类" || char.isTool || char.isQR) {
           char.category = "未归类";
           char.isTool = false;
           char.isQR = false;
           changed = true;
         }
-        // 若普通角色卡误入工具文件夹，恢复为未归类
         if (char.folderId && toolFolderIds.has(char.folderId)) {
           char.folderId = undefined;
           changed = true;
@@ -1237,25 +1310,29 @@ async function buildMetaCache(): Promise<CharMeta[]> {
       }
 
       if (changed) {
-        updatedCharsToWrite.push(char);
+        repairChanged.push(char);
       }
+
       newMeta.push(buildCharMeta(char, folderMap));
     }
-
-    if (updatedCharsToWrite.length > 0) {
+    if (repairChanged.length > 0) {
       const writeTx = db.transaction("characters", "readwrite");
-      for (const item of updatedCharsToWrite) {
-        await writeTx.store.put(item);
+      for (const char of repairChanged) {
+        await writeTx.store.put(char);
       }
       await writeTx.done;
     }
 
     if (newMeta.length > 0) {
-      const putTx = db.transaction("char_meta", "readwrite");
-      for (const meta of newMeta) {
-        await putTx.store.put(meta);
+      const CHUNK = 200;
+      for (let i = 0; i < newMeta.length; i += CHUNK) {
+        const chunk = newMeta.slice(i, i + CHUNK);
+        const putTx = db.transaction("char_meta", "readwrite");
+        for (const meta of chunk) {
+          await putTx.store.put(meta);
+        }
+        await putTx.done;
       }
-      await putTx.done;
     }
 
     if (typeof localStorage !== 'undefined') {
@@ -1458,18 +1535,31 @@ export async function getCharacters(
   }
 
   // Now fetch full objects ONLY for the paginated slice
-  const fetchTx = db.transaction("characters", "readonly");
-  const fetchStore = fetchTx.store;
+  // 每 50 个一批, 每批用一个新事务读完就关; 让出主线程必须放在事务之外, 否则事务会被
+  // 浏览器自动提交, 之后继续读会抛 TransactionInactiveError(详见 findDuplicates 的说明)。
   const characters: CharacterCard[] = [];
+  const FETCH_CHUNK = 50;
 
-  for (const meta of paginatedMeta) {
-    const fullChar = await fetchStore.get(meta.id);
-    if (fullChar && !fullChar.deletedAt) {
-      delete (fullChar as any)._isExplicitAvatarUpdate;
-      delete (fullChar as any)._oldFolderId;
-      delete (fullChar as any)._wasDeleted;
-      delete (fullChar as any)._previousFilePath;
-      characters.push(fullChar);
+  for (let chunkStart = 0; chunkStart < paginatedMeta.length; chunkStart += FETCH_CHUNK) {
+    const chunk = paginatedMeta.slice(chunkStart, chunkStart + FETCH_CHUNK);
+    const fetchTx = db.transaction("characters", "readonly");
+    const fetched = (await Promise.all(
+      chunk.map((meta) => fetchTx.store.get(meta.id)),
+    )) as (CharacterCard | undefined)[];
+    await fetchTx.done;
+
+    for (const fullChar of fetched) {
+      if (fullChar && !fullChar.deletedAt) {
+        delete (fullChar as any)._isExplicitAvatarUpdate;
+        delete (fullChar as any)._oldFolderId;
+        delete (fullChar as any)._wasDeleted;
+        delete (fullChar as any)._previousFilePath;
+        characters.push(fullChar);
+      }
+    }
+
+    if (chunkStart + FETCH_CHUNK < paginatedMeta.length) {
+      await new Promise((r) => setTimeout(r, 0));
     }
   }
 
@@ -1490,10 +1580,31 @@ export async function getCharacters(
   return { characters, total };
 }
 
-export async function getAllCharacters(includeBlobs = true): Promise<CharacterCard[]> {
+export async function getAllCharacters(includeBlobs = false): Promise<CharacterCard[]> {
   const db = await initDB();
-  const all = await db.getAll('characters');
-  const valid = all.filter((c) => !c.deletedAt);
+  const valid: CharacterCard[] = [];
+  const allKeys = await db.getAllKeys("characters");
+  const SCAN_CHUNK = 50;
+
+  for (let chunkStart = 0; chunkStart < allKeys.length; chunkStart += SCAN_CHUNK) {
+    const chunk = allKeys.slice(chunkStart, chunkStart + SCAN_CHUNK);
+    const tx = db.transaction("characters", "readonly");
+    const rows = (await Promise.all(
+      chunk.map((key) => tx.store.get(key)),
+    )) as (CharacterCard | undefined)[];
+    await tx.done;
+
+    for (const char of rows) {
+      if (char && !char.deletedAt) {
+        valid.push(char);
+      }
+    }
+
+    if (chunkStart + SCAN_CHUNK < allKeys.length) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
   if (includeBlobs) {
     for (const char of valid) {
       if (char.hasBlobsSeparated) {
@@ -1836,6 +1947,18 @@ export async function saveCharacters(
   const blobStore2 = tx2.objectStore("blobs");
   const charMetaStore2 = tx2.objectStore("char_meta");
 
+  // 事务无论是提交还是中止, tx2.done 最后都会 settle。把"清缓存"挂在这里最稳:
+  // 循环里任何一条 put 失败时(最常见是空间写满 QuotaExceededError, 事务会被 abort),
+  // 这句话仍然会执行, 界面不会继续拿旧 meta 显示、看不到已经落库的那几张。
+  // 同时, 事务失败时这个 promise 也会 reject; 循环里那句 await 会先抛出真正的错误,
+  // 它就变成没人接的 unhandled rejection(会被 main.tsx 的兜底捕捉成红屏), 所以顺手
+  // 挂一个空 catch 把它吃掉。
+  tx2.done.catch(() => {});
+  tx2.done.then(
+    () => invalidateCache(),
+    () => invalidateCache(),
+  );
+
   for (const character of characters) {
     if ((character.tokenCount === undefined || character.permanentTokens === undefined) && character.data) {
       try {
@@ -1874,7 +1997,6 @@ export async function saveCharacters(
   }
 
   await tx2.done;
-  invalidateCache();
 
   for (const character of characters) {
     if ((character as any)._isExplicitAvatarUpdate) {
@@ -1885,7 +2007,7 @@ export async function saveCharacters(
   }
 
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("charactersUpdated"));
+    notifyCharactersUpdated();
   }
 
   // 2.5) Link orphaned chats to these characters if names match.
@@ -2262,7 +2384,7 @@ export async function deleteCharactersBulk(
   }
   invalidateCache();
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("charactersUpdated"));
+    notifyCharactersUpdated();
   }
 }
 
@@ -2339,7 +2461,7 @@ export async function deleteCharacter(id: string): Promise<void> {
     }
   invalidateCache();
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("charactersUpdated"));
+    notifyCharactersUpdated();
   }
 }
 
@@ -2415,28 +2537,28 @@ export async function restoreCharacter(id: string): Promise<void> {
   }
   invalidateCache();
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("charactersUpdated"));
+    notifyCharactersUpdated();
   }
 }
 
 export async function getTrashedCharacters(
   includeBlobs: boolean = false,
 ): Promise<CharacterCard[]> {
+  const meta = await getCachedMeta();
+  const trashedMeta = meta.filter((m) => m.deletedAt);
+  trashedMeta.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+
   const db = await initDB();
   const trashed: CharacterCard[] = [];
-  const tx = db.transaction("characters", "readonly");
-  const store = tx.store;
-  let cursor = await store.openCursor();
+  const fetchTx = db.transaction("characters", "readonly");
+  const store = fetchTx.store;
 
-  while (cursor) {
-    const char = cursor.value;
-    if (char.deletedAt) {
-      trashed.push(char);
+  for (const m of trashedMeta) {
+    const fullChar = await store.get(m.id);
+    if (fullChar) {
+      trashed.push(fullChar);
     }
-    cursor = await cursor.continue();
   }
-
-  trashed.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
 
   if (includeBlobs) {
     for (const char of trashed) {
@@ -2454,69 +2576,25 @@ export async function getTrashedCharacters(
 }
 
 export async function emptyTrash(): Promise<void> {
-  const db = await initDB();
-  const tx1 = db.transaction("characters", "readonly");
-  const store = tx1.store;
-  let cursor = await store.openCursor();
-
-  const toDelete: string[] = [];
-  while (cursor) {
-    const char = cursor.value;
-    if (char.deletedAt) {
-      toDelete.push(char.id);
-    }
-    cursor = await cursor.continue();
+  const meta = await getCachedMeta();
+  const toDelete = meta.filter((m) => m.deletedAt).map((m) => m.id);
+  if (toDelete.length > 0) {
+    await deleteCharactersBulk(toDelete);
   }
-  await tx1.done;
-
-  // 直接复用 deleteCharactersBulk 的批量硬删除逻辑(只查一次全部角色、
-  // 只调一次原生批量接口、数据库一个事务删完), 不再自己另起一套
-  // "一个个删、每个之间还睡50ms"的循环。
-  await deleteCharactersBulk(toDelete);
 }
 
 export async function cleanupOldTrash(): Promise<void> {
   invalidateCache();
-  const db = await initDB();
-  const tx1 = db.transaction("characters", "readonly");
-  const store = tx1.store;
-  let cursor = await store.openCursor();
-
   const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
   const now = Date.now();
+  const meta = await getCachedMeta();
+  const toDelete = meta
+    .filter((m) => m.deletedAt && now - m.deletedAt > SEVEN_DAYS_MS)
+    .map((m) => m.id);
 
-  const toDelete: CharacterCard[] = [];
-  while (cursor) {
-    const char = cursor.value;
-    if (char.deletedAt && now - char.deletedAt > SEVEN_DAYS_MS) {
-      toDelete.push(char);
-    }
-    cursor = await cursor.continue();
+  if (toDelete.length > 0) {
+    await deleteCharactersBulk(toDelete);
   }
-  await tx1.done;
-
-  if (ENABLE_ANDROID_FILE_SYNC && isAndroid()) {
-    try {
-      const { deleteCharacterFromAndroid } = await import("./androidSync");
-      for (const char of toDelete) {
-        await deleteCharacterFromAndroid(char);
-        await new Promise((r) => setTimeout(r, 50));
-      }
-    } catch (e) {
-      console.error("Failed to async clean up old trash on Android", e);
-    }
-  }
-
-  const tx2 = db.transaction(["characters", "blobs", "char_meta"], "readwrite");
-  const store2 = tx2.objectStore("characters");
-  const blobStore = tx2.objectStore("blobs");
-  const charMetaStore2 = tx2.objectStore("char_meta");
-  for (const char of toDelete) {
-    await store2.delete(char.id);
-    await blobStore.delete(char.id);
-    await charMetaStore2.delete(char.id);
-  }
-  await tx2.done;
 }
 
 export interface DuplicateCharacter {
@@ -2613,11 +2691,22 @@ export async function findDuplicates(): Promise<DuplicateGroup[]> {
   // 流式扫描: 逐条读到就地把正文压成短指纹, 不在内存里留下一整张卡的完整对象
   // (旧写法 getAll() 会把整张表连同历史版本一起拉进内存, 大卡库下直接卡死)。
   const precomputed: DuplicateScanEntry[] = [];
-  const scanTx = db.transaction("characters", "readonly");
-  let cursor = await scanTx.store.openCursor();
-  while (cursor) {
-    const char = cursor.value as CharacterCard;
-    if (!char.deletedAt) {
+  // 逐批扫描: 每 50 张用一个新事务读完就关掉, 批与批之间才让出主线程。
+  // 不能在事务还开着的时候 await 定时器 —— 事务会被浏览器自动提交, 之后任何继续读写的
+  // 请求都会抛 TransactionInactiveError, 整个查重扫描会中途中断(表现就是重复卡列表永远
+  // 是空的), 所以让出主线程必须放在事务之外。
+  const scanKeys = await db.getAllKeys("characters");
+  const SCAN_CHUNK = 50;
+
+  for (let chunkStart = 0; chunkStart < scanKeys.length; chunkStart += SCAN_CHUNK) {
+    const chunkKeys = scanKeys.slice(chunkStart, chunkStart + SCAN_CHUNK);
+    const scanTx = db.transaction("characters", "readonly");
+    const chunkRows = (await Promise.all(
+      chunkKeys.map((key) => scanTx.store.get(key)),
+    )) as (CharacterCard | undefined)[];
+    await scanTx.done;
+
+    for (const char of chunkRows.filter((c): c is CharacterCard => !!c && !c.deletedAt)) {
       const data = char.data?.data || char.data || {};
       const firstMes = String(data.first_mes || "");
       const desc = String(data.description || "");
@@ -2651,9 +2740,10 @@ export async function findDuplicates(): Promise<DuplicateGroup[]> {
         firstLen: firstClean.length,
       });
     }
-    cursor = await cursor.continue();
+    if (chunkStart + SCAN_CHUNK < scanKeys.length) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
   }
-  await scanTx.done;
 
   const entryById = new Map<string, DuplicateScanEntry>();
   for (const item of precomputed) entryById.set(item.id, item);

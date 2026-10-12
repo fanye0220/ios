@@ -1,4 +1,4 @@
-import { getFallbackAvatar, resolveAvatarUrl } from '../lib/avatar';
+import { getFallbackAvatar, resolveAvatarUrl, safeCreateObjectURL } from '../lib/avatar';
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -6,6 +6,7 @@ import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { X, Upload, Check, Trash2, Download, Share2, Image as ImageIcon, FolderOpen, FolderArchive, Search, Loader2, ChevronRight } from 'lucide-react';
 import { CharacterCard, saveCharacter, resolveFolderPath } from '../lib/db';
 import { isAndroid, getLocalImageUrl, getDownloadTooltip } from '../lib/appBridge';
+import { describeSaveFailure } from '../lib/saveError';
 
 interface Props {
   isOpen: boolean;
@@ -29,14 +30,45 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
   const [isLoadingMiu, setIsLoadingMiu] = useState(false);
   const [miuSearch, setMiuSearch] = useState('');
 
+  // 看门狗: 头像写入/解码一旦长时间不返回(IndexedDB 写入被阻塞、存储写满、图片解码
+  // 事件丢失等), 也要把"正在读取并设置新头像..."的转圈收掉并说明原因, 不能永远卡住。
+  const processingWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const PROCESSING_TIMEOUT_MS = 30000;
+
+  const stopProcessing = () => {
+    if (processingWatchdogRef.current) {
+      clearTimeout(processingWatchdogRef.current);
+      processingWatchdogRef.current = null;
+    }
+    setIsProcessing(false);
+  };
+
+  const startProcessing = () => {
+    if (processingWatchdogRef.current) clearTimeout(processingWatchdogRef.current);
+    setIsProcessing(true);
+    processingWatchdogRef.current = setTimeout(() => {
+      processingWatchdogRef.current = null;
+      setIsProcessing(false);
+      alert('设置头像超时了：写入被浏览器/系统长时间阻塞（常见原因是存储空间已满，或 MIU 还开在另一个标签页/窗口里）。\n本次操作已取消，可先清理一些卡片或历史版本后重试。');
+    }, PROCESSING_TIMEOUT_MS);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (processingWatchdogRef.current) clearTimeout(processingWatchdogRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     let objectUrl: string | null = null;
     if (previewBlob) {
-      objectUrl = URL.createObjectURL(previewBlob);
-      setCurrentAvatarUrl(objectUrl);
+      objectUrl = safeCreateObjectURL(previewBlob);
+      if (objectUrl) setCurrentAvatarUrl(objectUrl);
+      else setCurrentAvatarUrl(resolveAvatarUrl(character.avatarUrlFallback, character.name || character.id));
     } else if (character.avatarBlob) {
-      objectUrl = URL.createObjectURL(character.avatarBlob);
-      setCurrentAvatarUrl(objectUrl);
+      objectUrl = safeCreateObjectURL(character.avatarBlob);
+      if (objectUrl) setCurrentAvatarUrl(objectUrl);
+      else setCurrentAvatarUrl(resolveAvatarUrl(character.avatarUrlFallback, character.name || character.id));
     } else if (character.localFilePath) {
       setCurrentAvatarUrl(getLocalImageUrl(character.localFilePath, character.updatedAt || character.createdAt));
     } else {
@@ -49,19 +81,23 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
   }, [character.avatarBlob, character.localFilePath, character.avatarUrlFallback, previewBlob, character.updatedAt, character.createdAt]);
 
   useEffect(() => {
-    const urls = (character.avatarHistory || []).map(blob => ({
-      blob,
-      url: URL.createObjectURL(blob)
-    }));
+    const urls: { blob: Blob, url: string }[] = [];
+    (character.avatarHistory || []).forEach(blob => {
+      const url = safeCreateObjectURL(blob);
+      if (url) urls.push({ blob, url });
+    });
     
     // Add current avatar to history if it's not there and is a blob
     if (character.avatarBlob) {
       const isCurrentInHistory = character.avatarHistory?.some(b => b === character.avatarBlob || (b.size === character.avatarBlob?.size && b.type === character.avatarBlob?.type));
       if (!isCurrentInHistory) {
-        urls.unshift({
-          blob: character.avatarBlob,
-          url: URL.createObjectURL(character.avatarBlob)
-        });
+        const url = safeCreateObjectURL(character.avatarBlob);
+        if (url) {
+          urls.unshift({
+            blob: character.avatarBlob,
+            url
+          });
+        }
       }
     } else if (character.localFilePath && (!character.avatarHistory || character.avatarHistory.length === 0)) {
       const localUrl = getLocalImageUrl(character.localFilePath, character.updatedAt || character.createdAt);
@@ -115,12 +151,14 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
         URL.revokeObjectURL(img.src);
         reject(e);
       };
-      img.src = URL.createObjectURL(blob);
+      const objectUrl = safeCreateObjectURL(blob);
+      if (!objectUrl) return reject(new Error('Invalid image blob'));
+      img.src = objectUrl;
     });
   };
 
   const processAndSetAvatar = async (file: Blob | File, originalName?: string) => {
-    setIsProcessing(true);
+    startProcessing();
     try {
       const fileName = originalName || (file as File).name || 'avatar.png';
       const isImg = file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i.test(fileName);
@@ -206,14 +244,20 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
       };
       
       delete updatedCharacter.localFilePath;
-      await saveCharacter(updatedCharacter);
+      try {
+        await saveCharacter(updatedCharacter);
+      } catch (err) {
+        console.error('保存新头像失败:', err);
+        alert(`保存新头像失败：${await describeSaveFailure(err)}\n头像没有被改动，请重试。`);
+        return;
+      }
       import('../lib/thumbCache').then(({ evictCharacterThumb }) => {
         evictCharacterThumb(character.id);
       }).catch(() => {});
       window.dispatchEvent(new CustomEvent('charactersUpdated'));
       onUpdate(updatedCharacter);
     } finally {
-      setIsProcessing(false);
+      stopProcessing();
     }
   };
 
@@ -243,7 +287,7 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
 
   const handleSelectMiuFile = async (filePath: string) => {
     setShowMiuPicker(false);
-    setIsProcessing(true);
+    startProcessing();
     try {
       const { readLocalFileBuffer } = await import('../lib/appBridge');
       const buffer = await readLocalFileBuffer(filePath);
@@ -262,7 +306,7 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
     } catch (e) {
       alert('处理本地文件失败');
     } finally {
-      setIsProcessing(false);
+      stopProcessing();
     }
   };
 
@@ -272,7 +316,7 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
 
   const handleSetAsAvatar = async () => {
     if (!previewBlob || previewBlob === character.avatarBlob) return;
-    setIsProcessing(true);
+    startProcessing();
 
     // 确保把正在被替换的原头像安全放进历史列表, 防止原头像永久丢失
     let newHistory = character.avatarHistory ? [...character.avatarHistory] : [];
@@ -349,7 +393,7 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
     } catch (err) {
       console.error("Failed to inject data into history avatar", err);
       alert("处理头像失败，可能该头像已损坏。");
-      setIsProcessing(false);
+      stopProcessing();
       return;
     }
 
@@ -372,14 +416,21 @@ export function AvatarViewer({ isOpen, character, onClose, onUpdate }: Props) {
     };
     
     delete updatedCharacter.localFilePath;
-    await saveCharacter(updatedCharacter);
+    try {
+      await saveCharacter(updatedCharacter);
+    } catch (err) {
+      console.error('保存新头像失败:', err);
+      alert(`保存新头像失败：${await describeSaveFailure(err)}\n头像没有被改动，请重试。`);
+      stopProcessing();
+      return;
+    }
     import('../lib/thumbCache').then(({ evictCharacterThumb }) => {
       evictCharacterThumb(character.id);
     }).catch(() => {});
     window.dispatchEvent(new CustomEvent('charactersUpdated'));
     onUpdate(updatedCharacter);
     setPreviewBlob(null); // Reset preview so it matches current
-    setIsProcessing(false);
+    stopProcessing();
   };
 
   const handleDeleteHistory = async (e: React.MouseEvent, blobToDelete: Blob) => {

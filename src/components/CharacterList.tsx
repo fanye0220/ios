@@ -1,6 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import { CURRENT_APP_VERSION } from "../config/version";
-import { getFallbackAvatar, resolveAvatarUrl } from "../lib/avatar";
+import { getFallbackAvatar, resolveAvatarUrl, safeCreateObjectURL } from "../lib/avatar";
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Masonry from 'react-masonry-css';
@@ -247,8 +247,32 @@ interface Props {
   isLightMode?: boolean;
 }
 
-// 记忆每个文件夹所在的分页位置，避免在卡片详情或子文件夹返回时丢失第5页等当前页码
+// 记忆每个文件夹所在的分页位置（在内存与 sessionStorage 中打通），避免在卡片详情或子文件夹返回时丢失第5页等当前页码
 const folderPageMemory = new Map<string, number>();
+
+function getFolderPage(folderKey: string): number {
+  const inMem = folderPageMemory.get(folderKey);
+  if (inMem && inMem > 0) return inMem;
+  try {
+    const raw = sessionStorage.getItem(`miu_folder_page_${folderKey}`);
+    if (raw) {
+      const parsed = parseInt(raw, 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        folderPageMemory.set(folderKey, parsed);
+        return parsed;
+      }
+    }
+  } catch (e) {}
+  return 1;
+}
+
+function setFolderPage(folderKey: string, pageNum: number): void {
+  if (pageNum <= 0) return;
+  folderPageMemory.set(folderKey, pageNum);
+  try {
+    sessionStorage.setItem(`miu_folder_page_${folderKey}`, pageNum.toString());
+  } catch (e) {}
+}
 
 export function CharacterList({
   folderId,
@@ -416,12 +440,24 @@ export function CharacterList({
   const [totalAllCharacters, setTotalAllCharacters] = useState(0);
 
   const folderKey = folderId || "root";
+  const prevFolderKeyRef = useRef<string>(folderKey);
+
   const [page, setPage] = useState<number>(() => {
-    return folderPageMemory.get(folderKey) || 1;
+    return getFolderPage(folderKey);
   });
   const [pageInputValue, setPageInputValue] = useState(() =>
-    String(folderPageMemory.get(folderKey) || 1),
+    String(getFolderPage(folderKey)),
   );
+
+  // 文件夹切换或从详情页/子文件夹返回时，同步恢复对应 folderKey 记忆的页码
+  useEffect(() => {
+    if (prevFolderKeyRef.current !== folderKey) {
+      prevFolderKeyRef.current = folderKey;
+      const targetPage = getFolderPage(folderKey);
+      setPage(targetPage);
+      setPageInputValue(targetPage.toString());
+    }
+  }, [folderKey]);
 
   useEffect(() => {
     setPageInputValue(page.toString());
@@ -475,8 +511,8 @@ export function CharacterList({
   const [isFilterOpen, setIsFilterOpen] = useState(false);
 
   useEffect(() => {
-    if (!debouncedSearchQuery && selectedTags.length === 0) {
-      folderPageMemory.set(folderKey, page);
+    if (prevFolderKeyRef.current === folderKey && !debouncedSearchQuery && selectedTags.length === 0) {
+      setFolderPage(folderKey, page);
     }
   }, [folderKey, page, debouncedSearchQuery, selectedTags.length]);
 
@@ -3812,8 +3848,8 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
     let objectUrl: string | null = null;
 
     if (char.avatarBlob) {
-      objectUrl = URL.createObjectURL(char.avatarBlob);
-      setUrl(objectUrl);
+      objectUrl = safeCreateObjectURL(char.avatarBlob);
+      if (objectUrl) setUrl(objectUrl);
     } else if (char.hasBlobsSeparated) {
       // 优先用小缩略图, 而不是整张原图去解码显示(参考卡库的做法):
       // 有界LRU缓存里已经有就直接用(几乎零成本), 没有再去数据库拿
@@ -3977,11 +4013,14 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
                 setUrl(defaultFallback);
                 return;
               }
-              if (char.avatarBlob) setUrlWithFallbackCleanup(URL.createObjectURL(char.avatarBlob), true);
-              else if (char.hasBlobsSeparated) {
+              if (char.avatarBlob) {
+                const u = safeCreateObjectURL(char.avatarBlob);
+                if (u) setUrlWithFallbackCleanup(u, true);
+                else setUrl(defaultFallback);
+              } else if (char.hasBlobsSeparated) {
                 getCharacterBlob(char.id).then((b) => {
-                  if (b && b.avatarBlob)
-                    setUrlWithFallbackCleanup(URL.createObjectURL(b.avatarBlob), true);
+                  const u = b?.avatarBlob ? safeCreateObjectURL(b.avatarBlob) : null;
+                  if (u) setUrlWithFallbackCleanup(u, true);
                   else setUrl(defaultFallback);
                 });
               } else setUrl(defaultFallback);
@@ -4098,10 +4137,14 @@ const CharacterCardItem = React.memo(function CharacterCardItem({
             setUrl(defaultFallback);
             return;
           }
-          if (char.avatarBlob) setUrlWithFallbackCleanup(URL.createObjectURL(char.avatarBlob), true);
-          else if (char.hasBlobsSeparated) {
+          if (char.avatarBlob) {
+            const u = safeCreateObjectURL(char.avatarBlob);
+            if (u) setUrlWithFallbackCleanup(u, true);
+            else setUrl(defaultFallback);
+          } else if (char.hasBlobsSeparated) {
             getCharacterBlob(char.id).then((b) => {
-              if (b && b.avatarBlob) setUrlWithFallbackCleanup(URL.createObjectURL(b.avatarBlob), true);
+              const u = b?.avatarBlob ? safeCreateObjectURL(b.avatarBlob) : null;
+              if (u) setUrlWithFallbackCleanup(u, true);
               else setUrl(defaultFallback);
             });
           } else setUrl(defaultFallback);
