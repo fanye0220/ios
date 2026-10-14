@@ -1502,31 +1502,45 @@ export function CharacterList({
   };
 
   const handleSelectAll = async () => {
-    const { characters: allChars } = await getCharacters(
-      1,
-      100000,
-      folderId,
-      debouncedSearchQuery,
-      selectedTags,
-      sortBy,
-      false,
-      false,
-      0,
-      100000,
-    );
+    const { getCachedMeta } = await import("../lib/db");
+    let allMeta = await getCachedMeta();
+    allMeta = allMeta.filter((c) => !c.deletedAt);
+    if (debouncedSearchQuery) {
+      const query = debouncedSearchQuery.toLowerCase();
+      allMeta = allMeta.filter(
+        (c) =>
+          c.name.toLowerCase().includes(query) ||
+          c.tags.some((t) => t.toLowerCase().includes(query))
+      );
+    }
+    if (selectedTags.length > 0) {
+      allMeta = allMeta.filter((c) =>
+        selectedTags.every((t) => c.tags.includes(t))
+      );
+    }
+    if (folderId === "favorites") {
+      allMeta = allMeta.filter((c) => c.isFavorite);
+    } else if (folderId === null) {
+      if (!debouncedSearchQuery && selectedTags.length === 0) {
+        allMeta = allMeta.filter((c) => !c.folderId);
+      }
+    } else if (folderId && folderId !== "all") {
+      allMeta = allMeta.filter((c) => c.folderId === folderId);
+    }
+
     const visibleFolders = debouncedSearchQuery
       ? folders.filter((f) =>
           f.name.toLowerCase().includes(debouncedSearchQuery.toLowerCase()),
         )
       : (selectedTags.length > 0 ? [] : folders);
 
-    const totalSelectable = allChars.length + visibleFolders.length;
+    const totalSelectable = allMeta.length + visibleFolders.length;
 
     if (selectedIds.size === totalSelectable) {
       setSelectedIds(new Set());
     } else {
       const newSet = new Set<string>();
-      allChars.forEach((c) => newSet.add(c.id));
+      allMeta.forEach((c) => newSet.add(c.id));
       visibleFolders.forEach((f) => newSet.add(f.id));
       setSelectedIds(newSet);
     }
@@ -1994,18 +2008,22 @@ export function CharacterList({
       const allFolders = await getFolders();
       const charIdsToExport = new Set<string>();
 
+      const { getCachedMeta } = await import("../lib/db");
+      const allMeta = await getCachedMeta();
+
       for (const id of idsToProcess) {
         const folder = allFolders.find((f) => f.id === id);
         if (folder) {
-          const addFolderChars = async (fId: string) => {
-            const { characters: fc } = await getCharacters(1, 10000, fId, "", [], "newest_import", false, false);
-            fc.forEach((c) => charIdsToExport.add(c.id));
+          const addFolderChars = (fId: string) => {
+            allMeta.forEach((c) => {
+              if (!c.deletedAt && c.folderId === fId) charIdsToExport.add(c.id);
+            });
             const subs = allFolders.filter((f) => f.parentId === fId);
             for (const sub of subs) {
-              await addFolderChars(sub.id);
+              addFolderChars(sub.id);
             }
           };
-          await addFolderChars(folder.id);
+          addFolderChars(folder.id);
         } else {
           charIdsToExport.add(id);
         }
@@ -2208,82 +2226,94 @@ export function CharacterList({
         const pad = (n: number) => n.toString().padStart(2, "0");
         const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 
-        // Native Android Streaming Zip
+        // 1. 原生安卓 Streaming ZIP 分卷模式（使用 500 张一卷，原生文件流写盘）
         if ((window as any).Android && (window as any).Android.startZip) {
-          const zipName = `批量导出/Tavern_Export_${timestamp}.zip`;
-          const started = await startAndroidZip(zipName);
-          if (!started) {
-            alert("无法启动原生ZIP导出引擎");
-            return;
-          }
+          try {
+            const NATIVE_CHUNK_SIZE = 500;
+            const nativeTotalParts = Math.ceil(charsArray.length / NATIVE_CHUNK_SIZE);
+            let nativeSuccessParts = 0;
+            const getUniqueName = createUniqueNameAllocator();
 
-          let successCount = 0;
-          const getUniqueName = createUniqueNameAllocator();
-          for (const cid of charsArray) {
-            const char = await getCharacter(cid);
-            if (!char) continue;
+            for (let partIdx = 0; partIdx < nativeTotalParts; partIdx++) {
+              const chunk = charsArray.slice(partIdx * NATIVE_CHUNK_SIZE, (partIdx + 1) * NATIVE_CHUNK_SIZE);
+              const partNumber = partIdx + 1;
+              const zipName =
+                nativeTotalParts > 1
+                  ? `批量导出/Tavern_Export_${timestamp}_卷${partNumber}.zip`
+                  : `批量导出/Tavern_Export_${timestamp}.zip`;
 
-            const uniqueName = getUniqueName(char.name);
+              const started = await startAndroidZip(zipName).catch(() => false);
+              if (!started) throw new Error(`startAndroidZip failed for part ${partNumber}`);
 
-            const { resolveFolderPath, getCharacterCategoryPrefix } =
-              await import("../lib/db");
-            const folderName = await resolveFolderPath(char.folderId);
-            let prefix = "";
-            if (folderName === "未归类" || !folderName) {
-              const autoCategory = getCharacterCategoryPrefix(char);
-              prefix = autoCategory === "未归类" ? "" : `${autoCategory}/`;
-            } else {
-              const parts = cleanExportFolderParts(folderName, char.name, uniqueName);
-              prefix = parts.length > 0 ? parts.join("/") + "/" : "";
+              for (const cid of chunk) {
+                const char = await getCharacter(cid);
+                if (!char) continue;
+
+                const uniqueName = getUniqueName(char.name);
+
+                const { resolveFolderPath, getCharacterCategoryPrefix } =
+                  await import("../lib/db");
+                const folderName = await resolveFolderPath(char.folderId);
+                let prefix = "";
+                if (folderName === "未归类" || !folderName) {
+                  const autoCategory = getCharacterCategoryPrefix(char);
+                  prefix = autoCategory === "未归类" ? "" : `${autoCategory}/`;
+                } else {
+                  const parts = cleanExportFolderParts(folderName, char.name, uniqueName);
+                  prefix = parts.length > 0 ? parts.join("/") + "/" : "";
+                }
+
+                await addCharacterToZip(
+                  char,
+                  null,
+                  {
+                    zipName,
+                    prefix,
+                    addEntry: addAndroidZipEntry,
+                  },
+                  uniqueName,
+                );
+              }
+
+              const finalPath = await finishAndroidZip(zipName);
+              if (finalPath) {
+                nativeSuccessParts++;
+                if (nativeTotalParts === 1) {
+                  const { shareLocalFileOnAndroid } = await import("../lib/appBridge");
+                  try {
+                    await shareLocalFileOnAndroid(finalPath, "application/zip");
+                  } catch (e) {}
+                }
+              }
             }
 
-            await addCharacterToZip(
-              char,
-              null,
-              {
-                zipName,
-                prefix,
-                addEntry: addAndroidZipEntry,
-              },
-              uniqueName,
-            );
-            successCount++;
-          }
-
-          const finalPath = await finishAndroidZip(zipName);
-          if (finalPath) {
-            const { shareLocalFileOnAndroid } = await import("../lib/appBridge");
-            let shared = false;
-            try {
-              shared = await shareLocalFileOnAndroid(finalPath, "application/zip");
-            } catch (e) {
-              console.warn("Failed to share zip:", e);
-            }
-            if (!shared) {
+            if (nativeSuccessParts === nativeTotalParts) {
               alert(
-                `批量导出成功！共导出 ${successCount} 个角色资料。\n文件已存至：Download/MIU/${zipName}`,
+                nativeTotalParts > 1
+                  ? `批量导出成功！共 ${charsArray.length} 张卡片，已按每包上限500张自动切分为 ${nativeTotalParts} 个分卷包，文件均保存在：Download/MIU/批量导出/`
+                  : `批量导出成功！文件已存至：Download/MIU/批量导出/`
               );
+              return;
             }
-          } else {
-            alert("导出结束时发生错误！");
+          } catch (e) {
+            console.warn("Native Android Zip export failed, falling back to JSZip chunked:", e);
           }
-
-          return;
         }
 
-        // Fallback: JSZip Chunked approach
-        const CHUNK_SIZE = 999999;
-        const totalParts = Math.ceil(charsArray.length / CHUNK_SIZE);
-
+        // 2. 通用 JSZip 分卷导出 (网页端模式：限制为 100 张一卷，完美保护网页浏览器内存不爆不卡)
+        const WEB_CHUNK_SIZE = 100;
+        const webTotalParts = Math.ceil(charsArray.length / WEB_CHUNK_SIZE);
         let successCountChunks = 0;
         let failedChunks: number[] = [];
         const getUniqueName = createUniqueNameAllocator();
+        const { downloadOrShareFile } = await import("../lib/appBridge");
 
-        for (let i = 0; i < charsArray.length; i += CHUNK_SIZE) {
-          const chunk = charsArray.slice(i, i + CHUNK_SIZE);
+        for (let partIdx = 0; partIdx < webTotalParts; partIdx++) {
+          const chunk = charsArray.slice(partIdx * WEB_CHUNK_SIZE, (partIdx + 1) * WEB_CHUNK_SIZE);
           const zip = new JSZip();
 
-          for (const cid of chunk) {
+          for (let cIdx = 0; cIdx < chunk.length; cIdx++) {
+            const cid = chunk[cIdx];
             const char = await getCharacter(cid);
             if (!char) continue;
 
@@ -2306,6 +2336,11 @@ export function CharacterList({
               }
               await addCharacterToZip(char, currentZip, undefined, uniqueName);
             }
+
+            // 每添加5张卡片让出一次 UI 主线程，防止网页卡死报警
+            if (cIdx % 5 === 0) {
+              await new Promise((resolve) => setTimeout(resolve, 0));
+            }
           }
 
           const zipBlob = await zip.generateAsync({
@@ -2313,32 +2348,32 @@ export function CharacterList({
             compression: "STORE",
           });
           const buffer = await zipBlob.arrayBuffer();
-          const chunkIndex = i / CHUNK_SIZE + 1;
+          const partNumber = partIdx + 1;
           const fileName =
-            totalParts > 1
-              ? `批量导出/Tavern_Export_${timestamp}_卷${chunkIndex}.zip`
-              : `批量导出/Tavern_Export_${timestamp}.zip`;
+            webTotalParts > 1
+              ? `Tavern_Export_${timestamp}_卷${partNumber}.zip`
+              : `Tavern_Export_${timestamp}.zip`;
 
-          const result = await saveToGallery(fileName, buffer);
-          if (result) {
+          const res = await downloadOrShareFile(fileName, buffer, "application/zip", webTotalParts === 1);
+          if (res.success) {
             successCountChunks++;
           } else {
-            failedChunks.push(chunkIndex);
+            failedChunks.push(partNumber);
           }
 
-          // 添加延迟等待安卓端落盘，释放内存限制导致前序任务被抛弃。
-          if (i + CHUNK_SIZE < charsArray.length) {
-            await new Promise((resolve) => setTimeout(resolve, 3500));
+          // 添加短暂停顿让手机浏览器 GC 进行垃圾回收，释放内存
+          if (partIdx + 1 < webTotalParts) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         }
 
         if (failedChunks.length > 0) {
-          alert(
-            `导出失败！由于文件过大，导致安卓内存过载。\n强烈建议：请下载最新源码重新打包安装您的安卓App（APK），升级后将开启底层原生 ZIP 引擎，支持上千张卡片无限制一次性导出且无内存报错！`,
-          );
+          alert(`部分分卷导出失败（第 ${failedChunks.join(", ")} 卷）。如果手机内存不足，建议分批勾选卡片导出。`);
         } else {
           alert(
-            `批量导出成功！本次为传统JS导出引擎。保存在 Download/MIU/批量导出/ 目录下。\n如果遇到导出不全、闪退问题，请重新编译更新您的 Android App (APK) 获取最新原生无限制导出引擎！`,
+            webTotalParts > 1
+              ? `批量导出成功！共 ${charsArray.length} 张卡片，已按网页端安全限制自动切分为 ${webTotalParts} 个压缩包（每包 100 张），文件均已准备完成！`
+              : `批量导出成功！压缩包文件已准备完成。`
           );
         }
 
@@ -2357,32 +2392,33 @@ export function CharacterList({
         });
       };
 
+      const { getCachedMeta } = await import("../lib/db");
+      const allMeta = await getCachedMeta();
+
       for (const id of Array.from(idsToProcess)) {
         const folder = allFolders.find((f) => f.id === id);
         if (folder) {
-          const collectFolderRecursive = async (
+          const collectFolderRecursive = (
             currentFolderId: string,
             currentPath: string[],
           ) => {
-            const { characters: folderChars } = await getCharacters(
-              1,
-              10000,
-              currentFolderId,
+            const folderChars = allMeta.filter(
+              (c) => !c.deletedAt && c.folderId === currentFolderId
             );
             for (const char of folderChars) {
-              await pushCharTask(char.id, currentPath);
+              pushCharTask(char.id, currentPath);
             }
             const subFolders = allFolders.filter(
               (f) => f.parentId === currentFolderId,
             );
             for (const subFolder of subFolders) {
-              await collectFolderRecursive(subFolder.id, [
+              collectFolderRecursive(subFolder.id, [
                 ...currentPath,
                 subFolder.name,
               ]);
             }
           };
-          await collectFolderRecursive(folder.id, [folder.name]);
+          collectFolderRecursive(folder.id, [folder.name]);
         } else {
           const char = await getCharacter(id);
           if (!char) continue;
