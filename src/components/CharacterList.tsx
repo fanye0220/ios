@@ -1994,7 +1994,11 @@ export function CharacterList({
   const handleBatchCloudBackup = async () => {
     if (selectedIds.size === 0) return;
 
-    const { getAccessToken, updateSyncState } = await import("../lib/drive");
+    const { getAccessToken, updateSyncState, isSyncTaskBusy } = await import("../lib/drive");
+    if (isSyncTaskBusy()) {
+      alert("已有同步或备份任务正在进行中，请等它跑完再点。");
+      return;
+    }
     const token = await getAccessToken();
     if (!token) {
       alert("请先前往「云端同步」页面登录 Google 账号。");
@@ -2039,6 +2043,8 @@ export function CharacterList({
       let success = 0;
       let moved = 0;
       let skipped = 0;
+      let failed = 0;
+      const failedSamples: string[] = [];
       let completed = 0;
       const CONCURRENCY = Capacitor.isNativePlatform() ? 3 : 5;
       let currentIndex = 0;
@@ -2059,8 +2065,12 @@ export function CharacterList({
             if (res === 'uploaded') success++;
             else if (res === 'moved') moved++;
             else skipped++;
-          } catch (e) {
+          } catch (e: any) {
             console.error("Upload failed for char:", charsArray[i], e);
+            failed++;
+            if (failedSamples.length < 5) {
+              failedSamples.push(`${e?.message || String(e)}`);
+            }
           } finally {
             completed++;
             updateSyncState({
@@ -2081,11 +2091,14 @@ export function CharacterList({
 
       updateSyncState({
         isActive: false,
-        completed: true,
+        completed: failed === 0,
+        isError: failed > 0,
         taskName: '批量同步',
-        message: `同步完成！新增 ${success}，移动 ${moved}${skipped > 0 ? `，跳过 ${skipped}` : ''}`,
+        message: failed > 0
+          ? `同步完成，但有 ${failed} 个失败：${failedSamples.join('；')}`
+          : `云端同步完成！新上传 ${success}，嵌套更新 ${moved}，跳过 ${skipped}`,
       });
-      alert(`云端同步完成！\n新上传: ${success} 个\n同步文件夹嵌套: ${moved} 个${skipped > 0 ? `\n分类未变已跳过: ${skipped} 个` : ''}`);
+      alert(`云端同步完成！\n新上传: ${success} 个\n同步文件夹嵌套: ${moved} 个${skipped > 0 ? `\n分类未变已跳过: ${skipped} 个` : ''}${failed > 0 ? `\n\n⚠️ 失败: ${failed} 个\n${failedSamples.join('\n')}` : ''}`);
     } catch (err: any) {
       console.error(err);
       updateSyncState({

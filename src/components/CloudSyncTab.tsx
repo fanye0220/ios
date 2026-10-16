@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Capacitor } from '@capacitor/core';
-import { Cloud, Download, Upload, Trash2, Github, Loader2, Search, Folder, ChevronRight, MessageSquare, FileText, FolderSync, Copy, CheckCircle2 } from 'lucide-react';
+import { Cloud, Download, Upload, Trash2, Github, Loader2, Search, Folder, ChevronRight, MessageSquare, FileText, FolderSync, Copy, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { listCloudCharacters, deleteCloudCharacter, syncFolderStructureToCloud } from '../lib/cloudDrive';
 import { getCardBadgeInfo } from '../lib/cardBadge';
 import { normalizeCardBaseName } from '../lib/db';
-import { initAuth, googleSignIn, logout, getAccessToken, listBackupsFromDrive, deleteBackupFromDrive, triggerManualBackup, triggerRestore, onSyncStateChange, SyncState, getStoredUserInfo, ensureValidAccessToken, updateSyncState } from '../lib/drive';
+import { initAuth, googleSignIn, logout, getAccessToken, listBackupsFromDrive, deleteBackupFromDrive, triggerManualBackup, triggerRestore, onSyncStateChange, SyncState, getStoredUserInfo, ensureValidAccessToken, updateSyncState, getLastBackupRecord, BackupRecord, isSyncTaskBusy } from '../lib/drive';
 
 const formatCloudName = (name: string) => name.replace(/_[a-f0-9-]{36}$/i, "");
 
@@ -57,6 +57,8 @@ export function CloudSyncTab({ isLightMode: propIsLightMode }: { isLightMode?: b
   const [isLoadingBackups, setIsLoadingBackups] = useState(false);
   
   const [actionFileId, setActionFileId] = useState<string | null>(null);
+  // 上一次打包备份的结果（持久在 localStorage 里），用来一眼判断"备份到底成没成"。
+  const [lastBackupRecord, setLastBackupRecord] = useState<BackupRecord | null>(() => getLastBackupRecord());
   const [syncInfo, setSyncInfo] = useState<SyncState>({ isActive: false, taskName: '', message: '', isError: false, completed: false });
 
     const [activeTab, setActiveTab] = useState<'backup' | 'cloud_drive'>('backup');
@@ -278,7 +280,11 @@ export function CloudSyncTab({ isLightMode: propIsLightMode }: { isLightMode?: b
     if (syncInfo.completed && syncInfo.taskName === '手动备份') {
       if (token) loadBackups(token);
     }
-  }, [syncInfo.completed, syncInfo.taskName, token]);
+    // 备份任务结束时（成功或失败）刷新"上次备份结果"显示
+    if (!syncInfo.isActive) {
+      setLastBackupRecord(getLastBackupRecord());
+    }
+  }, [syncInfo.completed, syncInfo.taskName, syncInfo.isError, token]);
 
   const handleLogin = async () => {
     setIsLoggingIn(true);
@@ -340,6 +346,10 @@ export function CloudSyncTab({ isLightMode: propIsLightMode }: { isLightMode?: b
   const [syncFolderProgress, setSyncFolderProgress] = useState<{ current: number; total: number; message: string } | null>(null);
 
   const handleSyncFolderStructure = async () => {
+    if (isSyncTaskBusy()) {
+      alert("已有同步或备份任务正在进行中，请等它跑完再点。");
+      return;
+    }
     const activeToken = await getActiveToken();
     if (!activeToken) return;
     try {
@@ -364,7 +374,7 @@ export function CloudSyncTab({ isLightMode: propIsLightMode }: { isLightMode?: b
         isActive: false,
         completed: true,
         taskName: '分类整理',
-        message: `分类对齐完成！已同步移动 ${res.moved} 个卡片`,
+        message: `分类对齐完成！移动 ${res.moved} 个，一致保持 ${res.unchanged} 个`,
       });
       alert(`文件夹分类对齐完成！\n已同步移动更新: ${res.moved} 个卡片\n分类一致保持原样: ${res.unchanged} 个`);
       await loadCloudChars(activeToken);
@@ -382,6 +392,10 @@ export function CloudSyncTab({ isLightMode: propIsLightMode }: { isLightMode?: b
   };
 
   const handleOneClickCloudSync = async () => {
+    if (isSyncTaskBusy()) {
+      alert("已有同步或备份任务正在进行中，请等它跑完再点。");
+      return;
+    }
     const activeToken = await getActiveToken();
     if (!activeToken) return;
     const confirm = window.confirm("确定要将所有本地卡片逐一同步至云端文件夹吗？\n\n如果云端已有相同卡片但分类不同，将自动同步移动到对应的嵌套文件夹中。");
@@ -409,6 +423,8 @@ export function CloudSyncTab({ isLightMode: propIsLightMode }: { isLightMode?: b
       let success = 0;
       let moved = 0;
       let skipped = 0;
+      let failed = 0;
+      const failedSamples: string[] = [];
       
       const isAndroid = Capacitor.isNativePlatform();
       const CONCURRENCY = isAndroid ? 3 : 5;
@@ -422,8 +438,12 @@ export function CloudSyncTab({ isLightMode: propIsLightMode }: { isLightMode?: b
              if (res === 'uploaded') success++;
              else if (res === 'moved') moved++;
              else skipped++;
-          } catch(e) {
+          } catch(e: any) {
              console.error("Failed", e);
+             failed++;
+             if (failedSamples.length < 5) {
+               failedSamples.push(`${chars[i].name || chars[i].id}: ${e?.message || String(e)}`);
+             }
           } finally {
              setOneClickProgress(prev => prev ? { ...prev, current: prev.current + 1, message: '正在同步卡片与目录分类...' } : null);
              updateSyncState({
@@ -445,11 +465,14 @@ export function CloudSyncTab({ isLightMode: propIsLightMode }: { isLightMode?: b
       setOneClickProgress(null);
       updateSyncState({
         isActive: false,
-        completed: true,
+        completed: failed === 0,
+        isError: failed > 0,
         taskName: '全量同步',
-        message: `全量同步完成！新增 ${success}，移动 ${moved}`,
+        message: failed > 0
+          ? `全量同步完成，但有 ${failed} 个失败：${failedSamples.join('；')}`
+          : `全量同步完成！新增 ${success}，移动 ${moved}，跳过 ${skipped}`,
       });
-      alert(`一键同步完成！\n新上传卡片: ${success}\n更新文件夹嵌套: ${moved}\n内容与分类一致已跳过: ${skipped}`);
+      alert(`一键同步完成！\n新上传卡片: ${success}\n更新文件夹嵌套: ${moved}\n内容与分类一致已跳过: ${skipped}${failed > 0 ? `\n\n⚠️ 失败: ${failed} 个\n${failedSamples.join('\n')}` : ''}`);
       if (activeTab === 'cloud_drive') {
         loadCloudChars(activeToken);
       }
@@ -755,6 +778,27 @@ export function CloudSyncTab({ isLightMode: propIsLightMode }: { isLightMode?: b
                 </>
               )}
             </button>
+
+            {lastBackupRecord && (
+              <div
+                className={`flex items-start gap-1.5 text-[11px] leading-relaxed ${
+                  lastBackupRecord.ok
+                    ? 'text-white/50 [.light-theme_&]:!text-[#64748b]'
+                    : 'text-red-400 [.light-theme_&]:!text-red-500'
+                }`}
+                title={lastBackupRecord.note || ''}
+              >
+                {lastBackupRecord.ok
+                  ? <CheckCircle2 className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                  : <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />}
+                <span className="min-w-0">
+                  上次备份 {new Date(lastBackupRecord.at).toLocaleString()} · {lastBackupRecord.ok ? '成功' : '失败'}
+                  {lastBackupRecord.size ? ` · ${formatSize(lastBackupRecord.size)}` : ''}
+                  {!lastBackupRecord.ok && lastBackupRecord.note ? ` · ${lastBackupRecord.note}` : ''}
+                  {lastBackupRecord.ok && lastBackupRecord.note ? ` ${lastBackupRecord.note}` : ''}
+                </span>
+              </div>
+            )}
 
             
             {isLoadingBackups ? (
