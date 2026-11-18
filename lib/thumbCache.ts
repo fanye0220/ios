@@ -1,0 +1,212 @@
+import { safeCreateObjectURL } from "./avatar";
+
+/**
+ * 参考卡库的做法: 缩略图 URL 用一个"有上限"的 LRU 缓存管理,
+ * 不管库里有多少张卡, 内存里同时挂着的 blob URL 数量永远有天花板,
+ * 超过上限就把最久没用到的挤出去并释放。
+ *
+ * 另外用一个小队列限制"同时进行中的缩略图读取/解码"数量,
+ * 快速滚动时不会一下子涌进来一堆解码任务同时抢 CPU。
+ */
+
+const MAX_CACHED_URLS = 600;
+const MAX_FOLDER_COVER_URLS = 1200;
+
+interface CacheEntry {
+  url: string;
+  isBlobUrl: boolean; // data:/http(s):/file: 这类不需要 revoke
+}
+
+const cache = new Map<string, CacheEntry>(); // Map 天然按插入/访问顺序排列,用来做 LRU
+const folderCoverCache = new Map<string, CacheEntry>(); // 文件夹封面专用独立缓存, 绝不被列表滚动淘汰 revoke
+
+function touch(key: string, entry: CacheEntry) {
+  cache.delete(key);
+  cache.set(key, entry);
+}
+
+function evictIfNeeded() {
+  while (cache.size > MAX_CACHED_URLS) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const entry = cache.get(oldestKey);
+    cache.delete(oldestKey);
+    if (entry?.isBlobUrl) {
+      URL.revokeObjectURL(entry.url);
+    }
+  }
+}
+
+/** 已经有缓存的话直接返回(并刷新它的 LRU 位置), 没有就返回 undefined */
+export function peekCachedUrl(key: string): string | undefined {
+  const entry = cache.get(key);
+  if (!entry) return undefined;
+  touch(key, entry);
+  return entry.url;
+}
+
+/** 写入一个新的 blob URL(会被 revoke 管理), 超出上限会自动淘汰最久未用的 */
+export function putCachedBlobUrl(key: string, blob: Blob, options?: { forceReplace?: boolean }): string {
+  if (!blob || (blob instanceof Blob && blob.size === 0)) return "";
+  const prev = cache.get(key);
+  if (prev?.url && !options?.forceReplace) {
+    touch(key, prev);
+    return prev.url;
+  }
+  if (prev?.isBlobUrl) URL.revokeObjectURL(prev.url);
+  const url = safeCreateObjectURL(blob);
+  if (!url) {
+    if (prev) cache.delete(key);
+    return "";
+  }
+  const isBlobUrl = url.startsWith("blob:");
+  const entry: CacheEntry = { url, isBlobUrl };
+  touch(key, entry);
+  evictIfNeeded();
+  return url;
+}
+
+/** 写入一个不需要 revoke 的静态 URL(data:/http/本地文件路径这类) */
+export function putCachedStaticUrl(key: string, url: string): string {
+  const prev = cache.get(key);
+  if (prev?.url === url && !prev.isBlobUrl) {
+    touch(key, prev);
+    return url;
+  }
+  if (prev?.isBlobUrl) URL.revokeObjectURL(prev.url);
+  const entry: CacheEntry = { url, isBlobUrl: false };
+  touch(key, entry);
+  evictIfNeeded();
+  return url;
+}
+
+function touchFolderCover(key: string, entry: CacheEntry) {
+  folderCoverCache.delete(key);
+  folderCoverCache.set(key, entry);
+}
+
+function evictFolderCoversIfNeeded() {
+  while (folderCoverCache.size > MAX_FOLDER_COVER_URLS) {
+    const oldestKey = folderCoverCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const entry = folderCoverCache.get(oldestKey);
+    folderCoverCache.delete(oldestKey);
+    if (entry?.isBlobUrl) {
+      URL.revokeObjectURL(entry.url);
+    }
+  }
+}
+
+/** 文件夹封面专用：命中缓存直接返回 */
+export function peekFolderCoverUrl(key: string): string | undefined {
+  const entry = folderCoverCache.get(key);
+  if (!entry) return undefined;
+  touchFolderCover(key, entry);
+  return entry.url;
+}
+
+/** 文件夹封面专用：写入新的 blob URL，受独立上限保护，绝不被普通卡片列表挤掉 */
+export function putFolderCoverBlobUrl(key: string, blob: Blob, options?: { forceReplace?: boolean }): string {
+  if (!blob || (blob instanceof Blob && blob.size === 0)) return "";
+  const prev = folderCoverCache.get(key);
+  if (prev?.url && !options?.forceReplace) {
+    touchFolderCover(key, prev);
+    return prev.url;
+  }
+  if (prev?.isBlobUrl) URL.revokeObjectURL(prev.url);
+  const url = safeCreateObjectURL(blob);
+  if (!url) {
+    if (prev) folderCoverCache.delete(key);
+    return "";
+  }
+  const isBlobUrl = url.startsWith("blob:");
+  const entry: CacheEntry = { url, isBlobUrl };
+  touchFolderCover(key, entry);
+  evictFolderCoversIfNeeded();
+  return url;
+}
+
+/** 检查是否为文件夹封面专用缓存所持有的 blob URL */
+export function isFolderCoverBlobUrl(url: string): boolean {
+  if (!url || !url.startsWith("blob:")) return false;
+  for (const entry of folderCoverCache.values()) {
+    if (entry.isBlobUrl && entry.url === url) return true;
+  }
+  return false;
+}
+
+/**
+ * 这个 URL 是不是本缓存创建并持有的 blob URL（包括卡片缩略图与文件夹封面）。
+ * 页面侧(比如文件夹预览)要释放自己用过的 blob URL 时, 必须先用它过滤一遍 ——
+ * 缓存持有的 URL 由 LRU 淘汰时统一释放, 页面再 revoke 一次就"双重释放"了:
+ * 图片会当场裂掉退回占位图, 之后复用同一个缓存 URL 的地方也一直是裂的。
+ */
+export function isCachedBlobUrl(url: string): boolean {
+  if (!url || !url.startsWith("blob:")) return false;
+  for (const entry of cache.values()) {
+    if (entry.isBlobUrl && entry.url === url) return true;
+  }
+  for (const entry of folderCoverCache.values()) {
+    if (entry.isBlobUrl && entry.url === url) return true;
+  }
+  return false;
+}
+
+/** 主动移除某一项(比如角色被删除时), 不等 LRU 自然淘汰 */
+export function releaseCachedUrl(key: string) {
+  const entry = cache.get(key);
+  if (entry) {
+    cache.delete(key);
+    if (entry.isBlobUrl) URL.revokeObjectURL(entry.url);
+  }
+}
+
+/** 清理某个角色的所有缩略图缓存 (换头像或更新时调用) */
+export function evictCharacterThumb(charId: string) {
+  for (const key of Array.from(cache.keys())) {
+    if (key === charId || key.startsWith(`${charId}:`)) {
+      releaseCachedUrl(key);
+    }
+  }
+  for (const key of Array.from(folderCoverCache.keys())) {
+    if (key.includes(charId)) {
+      const entry = folderCoverCache.get(key);
+      folderCoverCache.delete(key);
+      if (entry?.isBlobUrl) URL.revokeObjectURL(entry.url);
+    }
+  }
+}
+
+// ---- 并发限流队列: 同时最多几个缩略图读取任务在跑 ----
+const MAX_CONCURRENT_READS = 3;
+let activeReads = 0;
+const readQueue: (() => void)[] = [];
+
+function acquireReadSlot(): Promise<void> {
+  if (activeReads < MAX_CONCURRENT_READS) {
+    activeReads++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    readQueue.push(() => {
+      activeReads++;
+      resolve();
+    });
+  });
+}
+
+function releaseReadSlot() {
+  activeReads--;
+  const next = readQueue.shift();
+  if (next) next();
+}
+
+/** 排队执行一个"读取/解码"任务, 保证同一时刻最多 MAX_CONCURRENT_READS 个在跑 */
+export async function withReadSlot<T>(task: () => Promise<T>): Promise<T> {
+  await acquireReadSlot();
+  try {
+    return await task();
+  } finally {
+    releaseReadSlot();
+  }
+}
